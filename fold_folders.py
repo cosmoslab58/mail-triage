@@ -73,6 +73,12 @@ def main(argv):
         c.unselect_folder()
         left = c.folder_status(f, [b"MESSAGES"])[b"MESSAGES"]
         if left == 0:
+            # Unsubscribe first: some servers (Purelymail, for one) keep the subscription
+            # after DELETE, and clients then keep listing a folder that no longer exists.
+            try:
+                c.unsubscribe_folder(f)
+            except Exception:
+                pass
             c.delete_folder(f)
             print(f"  {f}: moved {len(uids)} to {later}, folder deleted")
         else:
