@@ -26,8 +26,17 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
+      # Docker Hub rate-limits anonymous pulls from GitHub's shared runner IPs (429s),
+      # so CI fetches everything through Google's Docker Hub mirror instead.
       - uses: docker/setup-qemu-action@v3
+        with:
+          image: mirror.gcr.io/tonistiigi/binfmt:latest
       - uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: image=mirror.gcr.io/moby/buildkit:buildx-stable-1
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["mirror.gcr.io"]
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
