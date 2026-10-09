@@ -1,0 +1,13 @@
+# Copy to compose.yaml next to your config.yaml + profile.md, then: docker compose up -d --build
+services:
+  mail-triage:
+    build: .                         # or the path to your checkout of this repo
+    container_name: mail-triage
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./config.yaml:/config/config.yaml:ro
+      - ./profile.md:/config/profile.md:ro   # re-read on every message, edits apply live
+      - mail-triage-data:/data               # state: cursors, contacts, learned corrections
+volumes:
+  mail-triage-data:

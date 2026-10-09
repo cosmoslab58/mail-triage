@@ -1,0 +1,6 @@
+IMAPClient==4.1.0
+PyYAML==6.0.3
+# LLM SDKs: only the one your config uses is imported. The Docker image ships all three.
+google-genai==2.29.0
+anthropic==1.12.1
+openai==2.13.0

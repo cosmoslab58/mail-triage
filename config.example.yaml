@@ -1,0 +1,52 @@
+# mail-triage configuration. Secrets never go in this file: anything ending in _env
+# names an environment variable that holds the value (see .env.example).
+
+owner: Alex                        # used in prompts: "what Alex must do"
+timezone: America/New_York
+profile: profile.md                # plain-English priorities, relative to this file
+
+# shadow: classify and notify, but never move or flag mail. The digest says what it
+# WOULD have filed. Start here for a few days, then set false.
+shadow: true
+
+llm:
+  provider: gemini                 # gemini | anthropic | openai (any OpenAI-compatible API)
+  model: gemini-3.5-flash
+  api_key_env: GOOGLE_API_KEY
+  thinking: low                    # gemini only: low | high
+  # provider: anthropic
+  # model: claude-haiku-5-5
+  # api_key_env: ANTHROPIC_API_KEY
+  # effort: low                    # anthropic only
+  # provider: openai               # local model through Ollama: nothing leaves your network
+  # model: qwen3:8b
+  # base_url: http://localhost:11434/v1
+
+notify:                            # where "now" emails and digests go
+  type: ntfy                       # gotify | ntfy | pushover | none (log only)
+  url: https://ntfy.sh
+  topic: change-me-to-something-unguessable
+  # type: gotify
+  # url: https://gotify.example.com
+  # token_env: GOTIFY_TOKEN        # an APPLICATION token
+  # type: pushover
+  # token_env: PUSHOVER_TOKEN
+  # user_env: PUSHOVER_USER
+
+# ops_notify: {...}                # optional: where "account offline" alerts go (default: notify)
+
+deadman:                           # optional: an external monitor that alerts when this goes quiet
+  style: kuma                      # kuma (Uptime Kuma push monitor) | healthchecks (healthchecks.io)
+  url_env: DEADMAN_URL
+
+quiet_hours: ["21:30", "07:00"]    # "now" pushes inside this window wait until it ends
+digest_time: "17:00"               # daily "today" digest
+weekly_day: sun                    # weekly "later" roll-up, sent at digest_time
+later_folder: Later
+body_chars: 2500                   # how much of each body the model sees
+
+accounts:
+  - {user: alex@gmail.com,   host: imap.gmail.com,    password_env: PW_ALEX_GMAIL}   # an app password
+  - {user: alex@example.com, host: imap.fastmail.com, password_env: PW_ALEX_WORK}
+  # move: false  -> classify and push only; never move or flag (e.g. a box a CRM also reads)
+  - {user: info@example.com, host: imap.fastmail.com, password_env: PW_INFO, move: false}

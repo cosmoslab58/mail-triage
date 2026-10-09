@@ -1,0 +1,6 @@
+line-length = 120
+[lint]
+select = ["E", "F", "W", "B", "I", "UP", "SIM"]
+# Broad catches are the design: a daemon that must fail open (mail stays in the inbox)
+# rather than die on one bad message or one flaky IMAP server.
+ignore = ["B904", "SIM105", "E501"]
