@@ -35,12 +35,13 @@ cp .env.example .env
 cp compose.example.yaml compose.yaml
 # edit config.yaml (accounts, LLM, notifier), profile.md (your priorities) and .env (secrets)
 
-python -m venv venv && venv/bin/pip install -r requirements.txt
-set -a; . ./.env; set +a
-venv/bin/python triage.py try you@gmail.com 15   # classify your last 15 emails, print only
+# classify your last 15 emails and print the results; nothing is moved or pushed
+docker compose run --rm mail-triage python triage.py try you@gmail.com 15
 
-docker compose up -d --build
+docker compose up -d
 ```
+
+The image is `ghcr.io/cosmoslab58/mail-triage` (amd64 and arm64, so a Raspberry Pi works). `:latest` follows `main`; release tags such as `:0.1` stay put. To build from source instead, swap `image:` for `build: .` in `compose.yaml`.
 
 `config.example.yaml` starts in `shadow: true`: it classifies and pushes, but never moves or flags anything, and the digest tells you what it *would* have filed. Turn it off once the digests look right.
 

@@ -1,4 +1,7 @@
 FROM python:3.13-slim
+LABEL org.opencontainers.image.source=https://github.com/cosmoslab58/mail-triage \
+      org.opencontainers.image.description="An LLM decides which of your emails get to interrupt you" \
+      org.opencontainers.image.licenses=MIT
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

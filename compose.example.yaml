@@ -1,7 +1,8 @@
-# Copy to compose.yaml next to your config.yaml + profile.md, then: docker compose up -d --build
+# Copy to compose.yaml next to your config.yaml + profile.md, then: docker compose up -d
 services:
   mail-triage:
-    build: .                         # or the path to your checkout of this repo
+    image: ghcr.io/cosmoslab58/mail-triage:latest   # or pin a release, e.g. :0.1
+    # build: .                                      # ...or build from this checkout instead
     container_name: mail-triage
     restart: unless-stopped
     env_file: .env
