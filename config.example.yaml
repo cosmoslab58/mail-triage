@@ -43,6 +43,10 @@ quiet_hours: ["21:30", "07:00"]    # "now" pushes inside this window wait until 
 digest_time: "17:00"               # daily "today" digest
 weekly_day: sun                    # weekly "later" roll-up, sent at digest_time
 later_folder: Later
+# Optional HTTP API for a dashboard: move mail between Inbox/Later/Spam, list spam (actions.py).
+# actions:
+#   listen: 0.0.0.0:8941             # inside the container; publish as 127.0.0.1:8941:8941
+#   token_env: TRIAGE_ACTIONS_TOKEN  # Authorization: Bearer <token> on every request
 body_chars: 2500                   # how much of each body the model sees
 
 accounts:

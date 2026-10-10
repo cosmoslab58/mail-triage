@@ -86,6 +86,7 @@ triage.py contacts                 rebuild the known-correspondents list from Se
 
 - **Gmail and Google Workspace:** use an app password (this requires 2-step verification; some Workspace admins disable app passwords).
 - **`move: false` on an account:** it is classified and pushed but never touched. Use this for a shared box another system also reads, such as a CRM.
+- **Actions API (optional):** with an `actions:` block (see `config.example.yaml`) the service also serves a small token-protected HTTP API so a dashboard can move a message to Inbox, Later or Spam and list each account's spam folder. Moves count as corrections, exactly like moving the message yourself. Publish it on loopback or a private network only; details in `actions.py`.
 - **State:** a small SQLite file in `/data` holds cursors, the contacts list and learned corrections. Losing it only means it starts fresh from "now".
 - **Prompt injection:** email bodies are wrapped and marked untrusted. The model's only power is choosing a tier and writing a summary, and the hard rules above bound what a hostile email can achieve.
 

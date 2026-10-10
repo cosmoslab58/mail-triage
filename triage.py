@@ -590,6 +590,8 @@ def main():
              CFG["llm"]["provider"], CFG["llm"]["model"], (CFG.get("notify") or {}).get("type", "none"))
     for spec in CFG["accounts"]:
         Account(spec).start()
+    import actions
+    actions.start(CFG.get("actions"), sys.modules[__name__])
     scheduler()
     return None
 
