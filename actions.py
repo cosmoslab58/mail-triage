@@ -8,6 +8,7 @@ what is sitting in each account's spam folder. Off unless `actions:` is configur
     GET  /accounts                 [{"user", "move"}]
     GET  /spam?days=30             [{"account", "msgid", "sender", "sender_name", "subject", "date"}]
     POST /move {"account", "msgid", "to": "inbox"|"later"|"spam"}
+                                   410 if the message has left all three; it is marked gone
 
 A move is recorded as a correction (`corrected` = the tier it moved to), the same signal as
 moving the message by hand, so the classifier learns from it. A message rescued from spam is
@@ -122,7 +123,9 @@ def move(account, msgid, dest, connect=None):
         if not uids:
             if locate(c, msgid, [target])[1]:
                 return {"ok": True, "moved_from": None, "note": f"already in {target}"}
-            raise ActionError(404, "message not found in Inbox, Later or Spam")
+            triage.q("UPDATE messages SET gone_at=? WHERE account=? AND msgid=?",
+                     triage.now().isoformat(), account, msgid)
+            raise ActionError(410, "no longer in Inbox, Later or Spam (deleted or archived in your mail app)")
         record(account, msgid, dest, found_in, c, uids[0])
         c.select_folder(found_in)
         c.move(uids, target)

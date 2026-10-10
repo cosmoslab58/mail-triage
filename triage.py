@@ -93,12 +93,15 @@ def init(cfg, data_dir, llm=None, notify=None):
       account TEXT, msgid TEXT, ts TEXT, sender TEXT, sender_name TEXT, subject TEXT,
       tier TEXT, category TEXT, summary TEXT, reason TEXT, phishing INTEGER, bulk INTEGER,
       notified TEXT, applied INTEGER DEFAULT 0, digested INTEGER DEFAULT 0, corrected TEXT,
-      PRIMARY KEY (account, msgid));
+      gone_at TEXT, PRIMARY KEY (account, msgid));
     CREATE TABLE IF NOT EXISTS cursor (account TEXT PRIMARY KEY, uidvalidity INTEGER, last_uid INTEGER);
     CREATE TABLE IF NOT EXISTS contacts (addr TEXT PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS sent_ids (msgid TEXT PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT);
     """)
+    # gone_at: no longer in INBOX or Later (deleted, archived or spammed elsewhere). Added 2026-10-10.
+    if "gone_at" not in {r[1] for r in _db.execute("PRAGMA table_info(messages)")}:
+        _db.execute("ALTER TABLE messages ADD COLUMN gone_at TEXT")
 
 
 def q(sql, *args):
@@ -385,7 +388,18 @@ class Account(threading.Thread):
                 continue
             q("UPDATE messages SET corrected=? WHERE account=? AND msgid=?", fix, self.user, msgid)
             log.info("correction learned: %s %s -> %s", msgid, tier, fix)
+        self.mark_gone(inbox | later, cutoff)
         self.last_corrections = time.time()
+
+    def mark_gone(self, present, cutoff):
+        """Record which messages have left INBOX and Later (deleted or archived in a mail
+        client), so a dashboard stops listing them; clear it if one comes back."""
+        for msgid, gone_at in q("SELECT msgid, gone_at FROM messages WHERE account=? AND ts > ?",
+                                self.user, cutoff):
+            if msgid in present and gone_at:
+                q("UPDATE messages SET gone_at=NULL WHERE account=? AND msgid=?", self.user, msgid)
+            elif msgid not in present and not gone_at:
+                q("UPDATE messages SET gone_at=? WHERE account=? AND msgid=?", now().isoformat(), self.user, msgid)
 
     # -- loop -------------------------------------------------------------------
     def session(self):

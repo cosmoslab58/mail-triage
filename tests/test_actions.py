@@ -89,10 +89,16 @@ def test_read_only_account_only_moves_to_inbox(ax):
     assert e.value.status == 403
 
 
-def test_missing_message_is_404_and_already_there_is_ok(ax):
+def test_missing_message_is_410_and_marked_gone(ax):
+    ax.q("INSERT INTO messages (account,msgid,ts,sender,subject,tier) VALUES (?,?,?,?,?,?)",
+         "a@x.com", "<nope@1>", "2026-10-09", "jo@example.com", "deleted", "today")
     with pytest.raises(actions.ActionError) as e:
         actions.move("a@x.com", "<nope@1>", "later", connect=box)
-    assert e.value.status == 404
+    assert e.value.status == 410
+    assert ax.q("SELECT gone_at IS NOT NULL FROM messages WHERE msgid='<nope@1>'") == [(1,)]
+
+
+def test_already_in_place_is_ok(ax):
     assert actions.move("a@x.com", "<a@1>", "inbox", connect=box)["moved_from"] is None
 
 

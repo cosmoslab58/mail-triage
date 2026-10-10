@@ -93,3 +93,15 @@ def test_notifier_levels_map_to_each_backend(monkeypatch):
     notifiers.make({"type": "ntfy", "topic": "x"}).send("t", "m", "low")
     notifiers.make({"type": "pushover"}).send("t", "m", "normal")
     assert [p["priority"] for p in posts] == [8, 2, 0]
+
+
+def test_scan_marks_mail_that_left_inbox_and_later_as_gone(env):
+    triage, _, _ = env
+    for mid in ("<kept@1>", "<deleted@1>", "<back@1>"):
+        triage.q("INSERT INTO messages (account,msgid,ts,sender,subject,tier) VALUES (?,?,?,?,?,?)",
+                 "a@x.com", mid, triage.now().isoformat(), "s@x", "s", "today")
+    triage.q("UPDATE messages SET gone_at='earlier' WHERE msgid='<back@1>'")
+    a = triage.Account({"user": "a@x.com", "host": "h", "password_env": "P"})
+    a.mark_gone({"<kept@1>", "<back@1>"}, "2000-01-01")
+    got = dict(triage.q("SELECT msgid, gone_at IS NOT NULL FROM messages"))
+    assert got == {"<kept@1>": 0, "<deleted@1>": 1, "<back@1>": 0}
