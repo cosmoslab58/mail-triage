@@ -11,7 +11,7 @@ shadow: true
 
 llm:
   provider: gemini                 # gemini | anthropic | openai (any OpenAI-compatible API)
-  model: gemini-3.5-flash
+  model: gemini-3.6-flash
   api_key_env: GOOGLE_API_KEY
   thinking: low                    # gemini only: low | high
   # provider: anthropic
