@@ -53,9 +53,14 @@ class Anthropic(Provider):
         output_config = {"format": {"type": "json_schema", "schema": schema}}
         if self.cfg.get("effort"):
             output_config["effort"] = self.cfg["effort"]
-        resp = self._client.messages.create(
-            model=self.model, max_tokens=4000, system=system,
-            messages=[{"role": "user", "content": user}], output_config=output_config)
+        kw = {"model": self.model, "max_tokens": 4000, "system": system,
+              "messages": [{"role": "user", "content": user}], "output_config": output_config}
+        if self.cfg.get("fallbacks"):
+            # "default": if a safety classifier declines, the API reruns the request on another model
+            resp = self._client.beta.messages.create(
+                **kw, betas=["server-side-fallback-2026-07-01"], fallbacks=self.cfg["fallbacks"])
+        else:
+            resp = self._client.messages.create(**kw)
         if resp.stop_reason != "end_turn":
             raise RuntimeError(f"claude stop_reason={resp.stop_reason}")
         return json.loads(next(b.text for b in resp.content if b.type == "text"))

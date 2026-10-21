@@ -18,6 +18,7 @@ llm:
   # model: claude-haiku-5-5
   # api_key_env: ANTHROPIC_API_KEY
   # effort: low                    # anthropic only
+  # fallbacks: default             # anthropic only: retry a safety decline on another model
   # provider: openai               # local model through Ollama: nothing leaves your network
   # model: qwen3:8b
   # base_url: http://localhost:11434/v1
