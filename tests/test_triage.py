@@ -76,6 +76,26 @@ def test_failed_message_still_reaches_the_digest(env):
     assert "1 to look at" in title and "Could not be sorted" in body and level == "normal"
 
 
+def test_digest_level_is_configurable(env, monkeypatch):
+    triage, _, notify = env
+    monkeypatch.setitem(triage.CFG, "digest_level", "low")
+    triage.daily_digest()
+    assert notify.sent[-1][2] == "low"
+
+
+def test_bad_digest_level_is_rejected(env, tmp_path):
+    triage = env[0]
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("owner: A\ntimezone: UTC\nllm: {provider: gemini, model: x}\n"
+                   "accounts: [{user: a}]\ndigest_level: loud\n")
+    try:
+        triage.load_config(cfg)
+    except SystemExit as e:
+        assert "digest_level" in str(e)
+        return
+    raise AssertionError("expected SystemExit")
+
+
 def test_deadman_reports_starting_then_stale_then_ok(env, monkeypatch):
     triage, _, _ = env
     monkeypatch.setattr(triage, "STARTED", time.time())

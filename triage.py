@@ -43,6 +43,7 @@ DEFAULTS = {
     "shadow": False,
     "quiet_hours": ["21:30", "07:00"],
     "digest_time": "17:00",
+    "digest_level": "normal",
     "weekly_day": "sun",
     "later_folder": "Later",
     "body_chars": 2500,
@@ -75,6 +76,8 @@ def load_config(path):
     for key in ("owner", "timezone", "llm", "accounts"):
         if not cfg.get(key):
             raise SystemExit(f"config: '{key}' is required")
+    if cfg["digest_level"] not in notifiers.LEVELS:
+        raise SystemExit(f"config: digest_level must be one of {', '.join(notifiers.LEVELS)}")
     return cfg
 
 
@@ -480,7 +483,7 @@ def daily_digest():
     parts = [line(r) for r in today] or ["_Nothing needs you today._"]
     verb = "would have filed (shadow mode)" if CFG["shadow"] else "filed"
     parts.append(f"\n{pushed} already pushed · {later} {verb} to {CFG['later_folder']}")
-    NOTIFY.send(f"📥 Today: {len(today)} to look at", "\n".join(parts), "normal")
+    NOTIFY.send(f"📥 Today: {len(today)} to look at", "\n".join(parts), CFG["digest_level"])
     q("UPDATE messages SET digested=1 WHERE digested=0 AND ts > ?", since)
 
 
