@@ -40,7 +40,7 @@ from email.utils import parseaddr, parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from imapclient.imapclient import JUNK
+from imapclient.imapclient import ALL, JUNK
 
 # The running triage module, handed over by start(). triage.py runs as __main__, so
 # `import triage` here would load a second copy with an empty config.
@@ -83,7 +83,28 @@ def folder_for(c, dest):
     return junk_folder(c)
 
 
+# A Message-ID as the parser keeps it: <...> of printable ASCII, no spaces or brackets inside.
+# Anything else is refused before it reaches an IMAP command: a CR/LF in a search string
+# would end the command and start another, and an empty one would match every message.
+MSGID = re.compile(r"<[\x21-\x3b\x3d\x3f-\x7e]{1,900}>")
+
+
+def check_msgid(msgid):
+    if not isinstance(msgid, str) or not MSGID.fullmatch(msgid):
+        raise ActionError(400, "not a Message-ID")
+    return msgid
+
+
+def all_mail(c):
+    """Gmail's All Mail (any language), where archived mail lives; None elsewhere."""
+    try:
+        return c.find_special_folder(ALL)
+    except Exception:
+        return None
+
+
 def locate(c, msgid, folders):
+    check_msgid(msgid)
     for f in folders:
         if f and c.folder_exists(f):
             c.select_folder(f)
@@ -123,6 +144,7 @@ def record(account, msgid, dest, found_in, c, uid):
 def move(account, msgid, dest, connect=None):
     if dest not in DESTS:
         raise ActionError(400, f"'to' must be one of {', '.join(DESTS)}")
+    check_msgid(msgid)
     spec = spec_for(account)
     if not spec.get("move", True) and dest != "inbox":
         raise ActionError(403, f"{account} is read-only here (move: false)")
@@ -154,8 +176,11 @@ def move(account, msgid, dest, connect=None):
 def readable(msg, limit=100_000):
     """The message as plain text with its line breaks: the text part, else the HTML flattened."""
     plain = htm = None
+    # a forwarded message's own parts are not this message's body
+    nested = {id(p) for part in msg.walk() if part.get_content_type() == "message/rfc822"
+              for p in part.walk() if p is not part}
     for part in msg.walk():
-        if part.get_content_maintype() == "multipart" or part.get_filename():
+        if part.get_content_maintype() == "multipart" or part.get_filename() or id(part) in nested:
             continue
         try:
             payload = part.get_content()
@@ -163,11 +188,11 @@ def readable(msg, limit=100_000):
             continue
         if not isinstance(payload, str):
             continue
-        if part.get_content_type() == "text/plain" and plain is None:
+        if part.get_content_type() == "text/plain" and not (plain or "").strip():
             plain = payload
         elif part.get_content_type() == "text/html" and htm is None:
             htm = payload
-    if plain is None and htm:
+    if not (plain or "").strip() and htm:
         htm = re.sub(r"(?is)<(script|style|head)\b.*?</\1>", " ", htm)
         htm = re.sub(r"(?i)<br\s*/?>|</(p|div|tr|li|h[1-6]|table)>", "\n", htm)
         plain = html.unescape(re.sub(r"<[^>]+>", " ", htm))
@@ -179,10 +204,11 @@ def readable(msg, limit=100_000):
 def message(account, msgid, read=False, connect=None):
     """One message by Message-ID, peeked so it stays unread unless `read` (and the account
     allows it)."""
+    check_msgid(msgid)
     spec = spec_for(account)
     c = (connect or triage.Account(spec).connect)()
     try:
-        folders = ["INBOX", triage.CFG["later_folder"], "[Gmail]/All Mail", junk_folder(c)]
+        folders = ["INBOX", triage.CFG["later_folder"], all_mail(c), junk_folder(c)]
         found_in, uids = locate(c, msgid, folders)
         if not uids:
             raise ActionError(410, "no longer in Inbox, Later or Spam (deleted or archived in your mail app)")
@@ -228,7 +254,8 @@ def listing(spec, folder, days, connect=None):
                     when = parsedate_to_datetime(str(h.get("Date"))).astimezone(triage.TZ).isoformat()
                 except Exception:
                     when = ""
-                out.append({"account": spec["user"], "msgid": str(h.get("Message-ID", "")).strip(),
+                out.append({"account": spec["user"],
+                            "msgid": (triage.ids_in(str(h.get("Message-ID", ""))) or [""])[0],
                             "sender": addr.lower(), "sender_name": name_ or addr,
                             "subject": str(h.get("Subject", "")), "date": when,
                             "seen": SEEN in (data.get(b"FLAGS") or ())})
@@ -267,11 +294,12 @@ def set_seen(account, msgids, seen, connect=None):
     spec = spec_for(account)
     if not spec.get("move", True):
         raise ActionError(403, f"{account} is read-only here (move: false)")
+    msgids = [check_msgid(m) for m in msgids]
     if not msgids:
         return {"ok": True, "changed": 0}
     c = (connect or triage.Account(spec).connect)()
     try:
-        folders = ["INBOX", triage.CFG["later_folder"], junk_folder(c)]
+        folders = ["INBOX", triage.CFG["later_folder"], junk_folder(c), all_mail(c)]
         changed = 0
         for f in folders:
             if not (f and c.folder_exists(f)):
@@ -290,6 +318,14 @@ def set_seen(account, msgids, seen, connect=None):
             c.logout()
         except Exception:
             pass
+
+
+def days(qs, default):
+    """?days= as 1-90; anything else is a 400, not a dropped connection."""
+    try:
+        return min(max(int(qs.get("days", [default])[0]), 1), 90)
+    except ValueError:
+        raise ActionError(400, "days must be a number") from None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -326,17 +362,15 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == "/accounts":
             return self._handle(lambda: [{"user": a["user"], "move": a.get("move", True)}
                                          for a in triage.CFG["accounts"]])
+        qs = parse_qs(url.query)
         if url.path == "/spam":
-            days = int(parse_qs(url.query).get("days", ["30"])[0])
-            return self._handle(lambda: list_spam(min(max(days, 1), 90)))
+            return self._handle(lambda: list_spam(days(qs, 30)))
         if url.path == "/folder":
-            qs = parse_qs(url.query)
-            name, days = qs.get("name", [""])[0], int(qs.get("days", ["14"])[0])
+            name = qs.get("name", [""])[0]
             if name not in DESTS:
                 return self._send(400, {"error": f"name must be one of {', '.join(DESTS)}"})
-            return self._handle(lambda: list_folder(name, min(max(days, 1), 90)))
+            return self._handle(lambda: list_folder(name, days(qs, 14)))
         if url.path == "/message":
-            qs = parse_qs(url.query)
             account, msgid = qs.get("account", [""])[0], qs.get("msgid", [""])[0]
             if not (account and msgid):
                 return self._send(400, {"error": "need account and msgid"})
@@ -350,7 +384,10 @@ class Handler(BaseHTTPRequestHandler):
 
         def run():
             try:
-                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+                size = int(self.headers.get("Content-Length", 0))
+                if size > 1_000_000:
+                    raise ActionError(413, "request too large")
+                body = json.loads(self.rfile.read(size) or b"{}")
             except ValueError:
                 raise ActionError(400, "body must be JSON")
             if path == "/seen":

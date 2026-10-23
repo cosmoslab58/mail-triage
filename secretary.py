@@ -372,7 +372,7 @@ def href(row):
 
 
 COLS = ("uid", "account", "msgid", "kind", "title", "due", "start", "end_", "location", "note", "link",
-        "priority", "state", "msgids", "sender", "reply_closes", "remind", "created")
+        "priority", "state", "msgids", "sender", "reply_closes", "remind", "created", "updated")
 
 
 def rows(where, *args):
@@ -380,8 +380,26 @@ def rows(where, *args):
             for r in triage.q(f"SELECT {', '.join(COLS)} FROM dav WHERE {where} ORDER BY created", *args)]
 
 
-def set_state(uid, state):
-    triage.q("UPDATE dav SET state=?, updated=? WHERE uid=?", state, triage.now().isoformat(), uid)
+def set_state(uid, state, seen=None):
+    """With `seen` (the row's `updated` when it was read), only if nothing changed it since:
+    an email can update the row on its account's thread while a sync is mid-request."""
+    if seen is None:
+        triage.q("UPDATE dav SET state=?, updated=? WHERE uid=?", state, triage.now().isoformat(), uid)
+    else:
+        triage.q("UPDATE dav SET state=?, updated=? WHERE uid=? AND updated=?",
+                 state, triage.now().isoformat(), uid, seen)
+
+
+def _ok(status, what):
+    if status not in (200, 201, 204):
+        raise RuntimeError(f"{what}: HTTP {status}")
+
+
+def collection_there(url):
+    """The collection answers. A to-do's 404 means it was deleted only if its list still exists;
+    a renamed or missing list must not turn every to-do into "done" (and its mail into read)."""
+    status, _, _ = _http("PROPFIND", url, None, {"Depth": "0"})
+    return status == 207
 
 
 def close_left_mail():
@@ -400,23 +418,39 @@ def push():
     error = ""
     for row in rows("state IN ('new','dirty','closing','cancel')"):
         try:
+            sent = "open" if row["kind"] == "todo" else "sent"
             if row["state"] == "new":
                 # 412 = already there (sent just before a restart): that's fine too
-                _http("PUT", href(row), ics(row), {"If-None-Match": "*"})
-                set_state(row["uid"], "open" if row["kind"] == "todo" else "sent")
+                status, _, _ = _http("PUT", href(row), ics(row), {"If-None-Match": "*"})
+                if status != 412:
+                    _ok(status, "PUT")
+                set_state(row["uid"], sent, row["updated"])
             elif row["state"] == "dirty":
-                _http("PUT", href(row), ics(row))
-                set_state(row["uid"], "open" if row["kind"] == "todo" else "sent")
+                # Look first: a to-do ticked off in the app since must stay done, not be
+                # reopened by this email's update, and edits made there are not overwritten.
+                status, text, etag = _http("GET", href(row))
+                if row["kind"] == "todo" and status == 200 and is_completed(text):
+                    set_state(row["uid"], "done", row["updated"])
+                    continue
+                headers = {"If-Match": etag} if status == 200 and etag else {}
+                status, _, _ = _http("PUT", href(row), ics(row), headers)
+                if status == 412:
+                    continue   # changed in the app between our GET and PUT: next round
+                _ok(status, "PUT")
+                set_state(row["uid"], sent, row["updated"])
             elif row["state"] == "cancel":
-                _http("DELETE", href(row))
-                set_state(row["uid"], "cancelled")
+                status, _, _ = _http("DELETE", href(row))
+                if status not in (404, 410):
+                    _ok(status, "DELETE")
+                set_state(row["uid"], "cancelled", row["updated"])
             else:
                 status, text, etag = _http("GET", href(row))
                 if status == 200 and not is_completed(text):
                     status, _, _ = _http("PUT", href(row), completed(text), {"If-Match": etag} if etag else {})
                     if status == 412:
                         continue   # edited in the app meanwhile: try again next round
-                set_state(row["uid"], "closed")
+                    _ok(status, "PUT")
+                set_state(row["uid"], "closed", row["updated"])
         except Exception as e:
             error = f"{type(e).__name__}: {e}"
             log.error("caldav %s %r failed: %s", row["kind"], row["title"], error)
@@ -425,10 +459,16 @@ def push():
 
 def poll():
     """Which open to-dos did you tick off (or delete) in your app?"""
+    there = None   # asked once, and only if some to-do is missing
     for row in rows("kind='todo' AND state='open'"):
         status, text, _ = _http("GET", href(row))
-        if status in (404, 410) or (status == 200 and is_completed(text)):
-            set_state(row["uid"], "done")
+        gone = status in (404, 410)
+        if gone and there is None:
+            there = collection_there(CFG["todo_url"])
+            if not there:
+                log.error("caldav: the to-do list %s is not answering; nothing marked done", CFG["todo_url"])
+        if (gone and there) or (status == 200 and is_completed(text)):
+            set_state(row["uid"], "done", row["updated"])
             log.info("to-do done: %s", row["title"])
 
 

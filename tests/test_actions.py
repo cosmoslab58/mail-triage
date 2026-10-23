@@ -182,3 +182,36 @@ def test_opening_with_read_marks_it_read(ax):
     assert imap.seen == set()                                   # peeked
     assert actions.message("a@x.com", "<a@1>", read=True, connect=lambda: imap)["seen"] is True
     assert imap.seen == {("INBOX", 1)}
+
+
+@pytest.mark.parametrize("bad", ["", "<a>\r\nX1 UID MOVE 1:* Trash", "no-brackets", "<a b>", "<é@x>", None])
+def test_only_real_message_ids_reach_imap(ax, bad):
+    called = []
+    for fn in (lambda: actions.message("a@x.com", bad, connect=lambda: called.append(1)),
+               lambda: actions.move("a@x.com", bad, "later", connect=lambda: called.append(1)),
+               lambda: actions.set_seen("a@x.com", [bad], True, connect=lambda: called.append(1))):
+        with pytest.raises(actions.ActionError) as e:
+            fn()
+        assert e.value.status == 400
+    assert not called
+
+
+def test_bad_days_is_a_400(ax, monkeypatch):
+    monkeypatch.setenv("T", "secret")
+    server = actions.start({"listen": "127.0.0.1:0", "token_env": "T"}, ax)
+    try:
+        req = urllib.request.Request(f"http://127.0.0.1:{server.server_address[1]}/spam?days=abc",
+                                     headers={"Authorization": "Bearer secret"})
+        with pytest.raises(urllib.error.HTTPError) as e:
+            urllib.request.urlopen(req)
+        assert e.value.code == 400
+    finally:
+        server.shutdown()
+
+
+def test_forwarded_message_does_not_replace_the_body(ax):
+    from email import message_from_bytes, policy
+    raw = (b"From: a@x\r\nMessage-ID: <f@1>\r\nContent-Type: multipart/mixed; boundary=B\r\n\r\n"
+           b"--B\r\nContent-Type: text/html\r\n\r\n<p>See below</p>\r\n"
+           b"--B\r\nContent-Type: message/rfc822\r\n\r\nFrom: b@y\r\nContent-Type: text/plain\r\n\r\nOld mail\r\n--B--\r\n")
+    assert actions.readable(message_from_bytes(raw, policy=policy.default)) == "See below"

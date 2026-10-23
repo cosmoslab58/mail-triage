@@ -14,8 +14,11 @@ class FakeDAV:
 
     def __init__(self):
         self.store = {}
+        self.collection_ok = True   # False: the list itself 404s (renamed, deleted, misconfigured)
 
     def __call__(self, method, url, body=None, headers=None):
+        if method == "PROPFIND":
+            return (207, "<multistatus/>", None) if self.collection_ok else (404, "", None)
         if method == "PUT":
             if (headers or {}).get("If-None-Match") == "*" and url in self.store:
                 return 412, "", None
@@ -300,3 +303,51 @@ def test_urgent_push_opens_the_message(sec, monkeypatch):
     monkeypatch.setitem(triage.CFG, "notify", {"open_url": "https://app.example/m?a={account}&id={msgid}"})
     triage.push_now("b@x.com", {"sender_name": "Jo", "subject": "s", "msgid": "<m1@ex>"}, {"summary": "x", "reason": "r"})
     assert notify.urls[2] == "https://app.example/m?a=b%40x.com&id=%3Cm1%40ex%3E"
+
+
+def test_a_missing_list_never_marks_todos_done(sec):
+    triage, llm, _, dav = sec
+    classify_and_record(triage, llm, "today", todo="Sign the form")
+    secretary.push()
+    dav.store.clear()
+    dav.collection_ok = False          # the whole to-do list is gone, not one item
+    secretary.poll()
+    assert triage.q("SELECT state FROM dav")[0][0] == "open"
+    dav.collection_ok = True           # the list is there and the item is not: deleted in the app
+    secretary.poll()
+    assert triage.q("SELECT state FROM dav")[0][0] == "done"
+
+
+def test_an_email_update_does_not_reopen_a_todo_ticked_off_in_the_app(sec):
+    triage, llm, _, dav = sec
+    classify_and_record(triage, llm, "today", mail(1), todo="Reply to Mike (said hi)")
+    secretary.push()
+    (href, ics), = todos(dav).items()
+    dav.store[href] = ics.replace("STATUS:NEEDS-ACTION", "STATUS:COMPLETED")   # ticked off, not yet polled
+    classify_and_record(triage, llm, "today", mail(2, "Re: Hey", "<m1@ex>"), todo="Reply to Mike (again)")
+    secretary.push()
+    assert "STATUS:COMPLETED" in dav.store[href] and "again" not in dav.store[href]
+    assert triage.q("SELECT state FROM dav")[0][0] == "done"
+
+
+def test_a_failed_put_is_retried_not_marked_sent(sec, monkeypatch):
+    triage, llm, _, dav = sec
+    classify_and_record(triage, llm, "today", todo="Sign the form")
+    monkeypatch.setattr(secretary, "_http", lambda *a, **k: (404, "", None))
+    assert "404" in secretary.push()
+    assert triage.q("SELECT state FROM dav")[0][0] == "new"
+
+
+def test_a_row_changed_mid_sync_keeps_its_change(sec, monkeypatch):
+    triage, llm, _, dav = sec
+    classify_and_record(triage, llm, "today", todo="Sign the form")
+    real = dav
+
+    def put_then_email_arrives(method, url, body=None, headers=None):
+        out = real(method, url, body, headers)
+        if method == "PUT":
+            triage.q("UPDATE dav SET title='Sign both forms', state='dirty', updated='later' WHERE 1")
+        return out
+    monkeypatch.setattr(secretary, "_http", put_then_email_arrives)
+    secretary.push()
+    assert triage.q("SELECT state FROM dav")[0][0] == "dirty"   # not overwritten to open

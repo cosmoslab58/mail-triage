@@ -17,6 +17,7 @@ Usage:
   triage.py backfill [DAYS]           to-dos/events for unread now/today mail already in INBOX (caldav)
 """
 import datetime as dt
+import hashlib
 import html
 import logging
 import os
@@ -168,7 +169,8 @@ def describe(raw, body_chars=2500):
     msg = message_from_bytes(raw, policy=policy.default)
     name, addr = parseaddr(str(msg.get("From", "")))
     addr = addr.lower()
-    msgid = (ids_in(str(msg.get("Message-ID", ""))) or [f"<nomsgid-{hash(raw[:4096])}>"])[0]
+    # no Message-ID: a stable stand-in (the built-in hash() of bytes changes every run)
+    msgid = (ids_in(str(msg.get("Message-ID", ""))) or [f"<nomsgid-{hashlib.sha1(raw[:4096]).hexdigest()}>"])[0]
     refs = ids_in(str(msg.get("In-Reply-To", ""))) + ids_in(str(msg.get("References", "")))
     return {
         "msgid": msgid,
