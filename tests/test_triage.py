@@ -125,3 +125,12 @@ def test_scan_marks_mail_that_left_inbox_and_later_as_gone(env):
     a.mark_gone({"<kept@1>", "<back@1>"}, "2000-01-01")
     got = dict(triage.q("SELECT msgid, gone_at IS NOT NULL FROM messages"))
     assert got == {"<kept@1>": 0, "<deleted@1>": 1, "<back@1>": 0}
+
+
+def test_digests_can_be_switched_off(env, tmp_path):
+    triage = env[0]
+    cfg = tmp_path / "config.yaml"
+    for value in ("off", "null", "none"):
+        cfg.write_text(f"owner: A\ntimezone: UTC\nllm: {{provider: gemini, model: x}}\n"
+                       f"accounts: [{{user: a}}]\ndigest_time: {value}\n")
+        assert triage.load_config(cfg)["digest_time"] is None

@@ -78,6 +78,8 @@ def load_config(path):
     for key in ("owner", "timezone", "llm", "accounts"):
         if not cfg.get(key):
             raise SystemExit(f"config: '{key}' is required")
+    if cfg["digest_time"] in (False, "off", "none"):   # YAML reads a bare `off` as false
+        cfg["digest_time"] = None
     if cfg["digest_level"] not in notifiers.LEVELS:
         raise SystemExit(f"config: digest_level must be one of {', '.join(notifiers.LEVELS)}")
     return cfg
@@ -576,7 +578,7 @@ def scheduler():
                     q("UPDATE messages SET notified=? WHERE account=? AND msgid=?",
                       "sent" if ok else "failed", account, msgid)
             day = t.date().isoformat()
-            if t.strftime("%H:%M") >= CFG["digest_time"] and kv_get("daily") != day:
+            if CFG["digest_time"] and t.strftime("%H:%M") >= CFG["digest_time"] and kv_get("daily") != day:
                 kv_set("daily", day)
                 daily_digest()
                 if t.strftime("%a").lower() == CFG["weekly_day"]:

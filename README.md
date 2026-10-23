@@ -77,6 +77,8 @@ Only the SDK you use is imported. With a hosted provider, each email's sender, s
 
 On Android, give each Gotify or ntfy priority its own notification channel: High rings, Normal makes a sound, Low is silent.
 
+If you track mail through the to-do list (or just want urgent pushes and nothing else), set `digest_time: null`: no daily digest, no weekly roll-up. "Today" mail still waits in your inbox.
+
 ## Switching from filters
 
 Server-side filters that skip the inbox hide mail from mail-triage, so delete them (keep plain spam blocklists). `fold_folders.py` then moves the contents of the folders those filters fed into `Later` and removes them. You name each folder, it dry-runs by default, and nothing is deleted:

@@ -41,7 +41,7 @@ deadman:                           # optional: an external monitor that alerts w
   url_env: DEADMAN_URL
 
 quiet_hours: ["21:30", "07:00"]    # "now" pushes inside this window wait until it ends
-digest_time: "17:00"               # daily "today" digest
+digest_time: "17:00"               # daily "today" digest; null for no digests at all (urgent pushes only)
 digest_level: normal               # its push level: normal (a sound) or low (silent, e.g. when
                                    # something else rolls it into a summary of its own)
 weekly_day: sun                    # weekly "later" roll-up, sent at digest_time
