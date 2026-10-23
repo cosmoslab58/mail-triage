@@ -297,3 +297,6 @@ def test_urgent_push_opens_the_message(sec, monkeypatch):
     triage.push_now("a@x.com", {"sender_name": "Jo", "subject": "s", "msgid": "<m1@ex>"}, {"summary": "x", "reason": "r"})
     triage.push_now("b@x.com", {"sender_name": "Jo", "subject": "s", "msgid": "<m1@ex>"}, {"summary": "x", "reason": "r"})
     assert "rfc822msgid" in notify.urls[0] and notify.urls[1] == "https://todo.example"
+    monkeypatch.setitem(triage.CFG, "notify", {"open_url": "https://app.example/m?a={account}&id={msgid}"})
+    triage.push_now("b@x.com", {"sender_name": "Jo", "subject": "s", "msgid": "<m1@ex>"}, {"summary": "x", "reason": "r"})
+    assert notify.urls[2] == "https://app.example/m?a=b%40x.com&id=%3Cm1%40ex%3E"

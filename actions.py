@@ -7,6 +7,8 @@ what is sitting in each account's spam folder. Off unless `actions:` is configur
 
     GET  /accounts                 [{"user", "move"}]
     GET  /spam?days=30             [{"account", "msgid", "sender", "sender_name", "subject", "date"}]
+    GET  /message?account=&msgid=  {"account", "msgid", "folder", "from", "to", "cc", "date", "subject",
+                                    "text", "link"}; read only, the message stays unread
     POST /move {"account", "msgid", "to": "inbox"|"later"|"spam"}
                                    410 if the message has left all three; it is marked gone
 
@@ -19,9 +21,11 @@ from __future__ import annotations
 
 import datetime as dt
 import hmac
+import html
 import json
 import logging
 import os
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from email import message_from_bytes, policy
@@ -138,6 +142,58 @@ def move(account, msgid, dest, connect=None):
             pass
 
 
+def readable(msg, limit=100_000):
+    """The message as plain text with its line breaks: the text part, else the HTML flattened."""
+    plain = htm = None
+    for part in msg.walk():
+        if part.get_content_maintype() == "multipart" or part.get_filename():
+            continue
+        try:
+            payload = part.get_content()
+        except Exception:
+            continue
+        if not isinstance(payload, str):
+            continue
+        if part.get_content_type() == "text/plain" and plain is None:
+            plain = payload
+        elif part.get_content_type() == "text/html" and htm is None:
+            htm = payload
+    if plain is None and htm:
+        htm = re.sub(r"(?is)<(script|style|head)\b.*?</\1>", " ", htm)
+        htm = re.sub(r"(?i)<br\s*/?>|</(p|div|tr|li|h[1-6]|table)>", "\n", htm)
+        plain = html.unescape(re.sub(r"<[^>]+>", " ", htm))
+    text = re.sub(r"[ \t\xa0]+", " ", (plain or "").replace("\r\n", "\n"))
+    text = re.sub(r"\n[ ]+", "\n", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()[:limit]
+
+
+def message(account, msgid, connect=None):
+    """One message by Message-ID, peeked so reading it here does not mark it read."""
+    spec = spec_for(account)
+    c = (connect or triage.Account(spec).connect)()
+    try:
+        folders = ["INBOX", triage.CFG["later_folder"], "[Gmail]/All Mail", junk_folder(c)]
+        found_in, uids = locate(c, msgid, folders)
+        if not uids:
+            raise ActionError(410, "no longer in Inbox, Later or Spam (deleted or archived in your mail app)")
+        c.select_folder(found_in, readonly=True)
+        raw = c.fetch([uids[0]], ["BODY.PEEK[]"])[uids[0]][b"BODY[]"]
+    finally:
+        try:
+            c.logout()
+        except Exception:
+            pass
+    msg = message_from_bytes(raw, policy=policy.default)
+    try:
+        when = parsedate_to_datetime(str(msg.get("Date"))).astimezone(triage.TZ).isoformat()
+    except Exception:
+        when = ""
+    return {"account": account, "msgid": msgid, "folder": found_in,
+            "from": str(msg.get("From", "")), "to": str(msg.get("To", "")), "cc": str(msg.get("Cc", "")),
+            "date": when, "subject": str(msg.get("Subject", "")), "text": readable(msg),
+            "link": triage.secretary.link_for(spec, msgid)}
+
+
 def spam_for(spec, days, connect=None):
     c = (connect or triage.Account(spec).connect)()
     try:
@@ -217,6 +273,12 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == "/spam":
             days = int(parse_qs(url.query).get("days", ["30"])[0])
             return self._handle(lambda: list_spam(min(max(days, 1), 90)))
+        if url.path == "/message":
+            qs = parse_qs(url.query)
+            account, msgid = qs.get("account", [""])[0], qs.get("msgid", [""])[0]
+            if not (account and msgid):
+                return self._send(400, {"error": "need account and msgid"})
+            return self._handle(lambda: message(account, msgid))
         return self._send(404, {"error": "not found"})
 
     def do_POST(self):

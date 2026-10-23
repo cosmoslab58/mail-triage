@@ -31,7 +31,7 @@ class FakeIMAP:
         return list(self.folders[self.sel])
 
     def fetch(self, uids, parts):
-        return {u: {HDR: self.folders[self.sel][u]} for u in uids}
+        return {u: {HDR: self.folders[self.sel][u], b"BODY[]": self.folders[self.sel][u]} for u in uids}
 
     def move(self, uids, dest):
         for u in uids:
@@ -126,3 +126,18 @@ def test_api_off_without_token(ax, monkeypatch):
     monkeypatch.delenv("T", raising=False)
     assert actions.start({"listen": "127.0.0.1:0", "token_env": "T"}, ax) is None
     assert actions.start(None, ax) is None
+
+
+def test_message_is_readable_text(ax):
+    html_mail = (b"From: Jo <jo@example.com>\r\nSubject: Lunch\r\nMessage-ID: <h@1>\r\n"
+                 b"Content-Type: text/html\r\n\r\n<style>p{}</style><p>Hi&nbsp;there</p><p>Lunch<br>Friday?</p>")
+    imap = FakeIMAP({"INBOX": {}, "Later": {3: html_mail}, "[Gmail]/Spam": {}})
+    out = actions.message("a@x.com", "<h@1>", connect=lambda: imap)
+    assert out["folder"] == "Later" and out["subject"] == "Lunch"
+    assert out["text"] == "Hi there\nLunch\nFriday?"
+
+
+def test_message_gone_is_410(ax):
+    with pytest.raises(actions.ActionError) as e:
+        actions.message("a@x.com", "<nope@1>", connect=box)
+    assert e.value.status == 410

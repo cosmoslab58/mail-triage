@@ -70,7 +70,7 @@ The image is `ghcr.io/cosmoslab58/mail-triage` (amd64 and arm64, so a Raspberry 
 
 Only the SDK you use is imported. With a hosted provider, each email's sender, subject and opening text is sent to that provider; use a paid tier if you don't want it used for training.
 
-**Push** (`notify.type`): `gotify`, `ntfy`, `pushover`, or `none` (log only). Tapping an urgent push opens the email (Gmail) or `notify.click_url`. Three levels map onto each service's priorities:
+**Push** (`notify.type`): `gotify`, `ntfy`, `pushover`, or `none` (log only). Tapping an urgent push opens `notify.open_url` (your own page for the message, e.g. one backed by `GET /message`), else the email (Gmail), else `notify.click_url`. Three levels map onto each service's priorities:
 
 | Level | Used for | Gotify | ntfy | Pushover |
 |---|---|---|---|---|

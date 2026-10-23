@@ -485,10 +485,16 @@ def record_failure(account, uid, raw, err):
 
 
 def push_now(account, m, out):
-    """Tapping the push opens the message where the webmail can find it, else notify.click_url
-    (e.g. a to-do list or dashboard)."""
+    """Tapping the push opens notify.open_url (a page that shows the message, filled with
+    {account} and {msgid}), else the message where the webmail can find it, else
+    notify.click_url (e.g. a to-do list or dashboard)."""
     spec = next((a for a in CFG["accounts"] if a["user"] == account), {})
-    url = secretary.link_for(spec, m.get("msgid", "")) or (CFG.get("notify") or {}).get("click_url")
+    cfg, msgid = CFG.get("notify") or {}, m.get("msgid", "")
+    url = None
+    if cfg.get("open_url") and msgid:
+        url = cfg["open_url"].format(account=urllib.parse.quote(account, safe=""),
+                                     msgid=urllib.parse.quote(msgid, safe=""))
+    url = url or secretary.link_for(spec, msgid) or cfg.get("click_url")
     return NOTIFY.send(f"{m['sender_name'][:40]}: {m['subject'][:60]}",
                        f"{out['summary']}\n\n_{out['reason']} · {account}_", "urgent", url=url)
 

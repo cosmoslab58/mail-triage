@@ -30,6 +30,7 @@ notify:                            # where "now" emails and digests go
   # type: gotify
   # url: https://gotify.example.com
   # click_url: https://todo.example.com   # tapping a push opens this when the mail has no webmail link
+  # open_url: https://app.example.com/mail/message?account={account}&msgid={msgid}   # or this, first
   # token_env: GOTIFY_TOKEN        # an APPLICATION token
   # type: pushover
   # token_env: PUSHOVER_TOKEN
