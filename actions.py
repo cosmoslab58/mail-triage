@@ -13,8 +13,8 @@ what is sitting in each account's spam folder. Off unless `actions:` is configur
     GET  /message?account=&msgid=[&read=1]
                                    {"account", "msgid", "folder", "from", "to", "cc", "date", "subject",
                                     "text", "link", "seen"}; peeked, unless read=1 marks it read
-    POST /seen {"account", "msgids": [...], "seen": true|false}
-                                   mark read or unread, wherever the messages are
+    POST /seen {"account", "msgids": [...], "seen": true|false[, "where": "inbox"|"later"|"spam"]}
+                                   mark read or unread, wherever the messages are (`where` first)
     POST /move {"account", "msgid", "to": "inbox"|"later"|"spam"}
                                    410 if the message has left all three; it is marked gone
 
@@ -36,7 +36,9 @@ import logging
 import os
 import re
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from email import message_from_bytes, policy
 from email.utils import parseaddr, parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -55,6 +57,64 @@ JUNK_NAMES = ("Junk", "Spam", "[Gmail]/Spam", "Junk E-mail", "Junk Email")
 HEADERS = b"BODY[HEADER.FIELDS (FROM SUBJECT DATE MESSAGE-ID)]"
 SEEN = b"\\Seen"
 PER_FOLDER = 100   # newest messages listed per account and folder
+
+
+# Logins are kept a few minutes and reused: a fresh login (Gmail most of all) was most of the
+# time a button took. One connection per account, used by one request at a time.
+KEEP_S = 240
+_pool: dict = {}            # account -> (IMAPClient, when last used)
+_locks: dict = {}
+_locks_guard = threading.Lock()
+
+
+def _lock(user):
+    with _locks_guard:
+        return _locks.setdefault(user, threading.Lock())
+
+
+def _close(c):
+    try:
+        c.logout()
+    except Exception:
+        pass
+
+
+@contextmanager
+def imap(spec, connect=None):
+    """A logged-in IMAP connection to `spec`'s account. With `connect` (tests) it is a fresh
+    one, logged out after. Otherwise a kept one is reused if it still answers, and kept again
+    unless something went wrong with it."""
+    if connect:
+        c = connect()
+        try:
+            yield c
+        finally:
+            _close(c)
+        return
+    user = spec["user"]
+    with _lock(user):
+        c, hit = None, _pool.pop(user, None)
+        if hit and time.monotonic() - hit[1] < KEEP_S:
+            try:
+                hit[0].noop()
+                c = hit[0]
+            except Exception:
+                _close(hit[0])
+        elif hit:
+            _close(hit[0])
+        c = c or triage.Account(spec).connect()
+        keep = False
+        try:
+            yield c
+            keep = True
+        except ActionError:
+            keep = True     # an answer like 404/410, not a broken connection
+            raise
+        finally:
+            if keep:
+                _pool[user] = (c, time.monotonic())
+            else:
+                _close(c)
 
 
 class ActionError(Exception):
@@ -150,8 +210,7 @@ def move(account, msgid, dest, connect=None):
     spec = spec_for(account)
     if not spec.get("move", True) and dest == "later":
         raise ActionError(403, f"{account} is never filed to Later (move: false)")
-    c = (connect or triage.Account(spec).connect)()
-    try:
+    with imap(spec, connect) as c:
         target = folder_for(c, dest)
         if not target:
             raise ActionError(409, f"{account} has no spam folder")
@@ -168,11 +227,6 @@ def move(account, msgid, dest, connect=None):
         c.move(uids, target)
         log.info("moved %s %s: %s -> %s", account, msgid, found_in, target)
         return {"ok": True, "moved_from": found_in, "moved_to": target}
-    finally:
-        try:
-            c.logout()
-        except Exception:
-            pass
 
 
 def readable(msg, limit=100_000):
@@ -208,8 +262,7 @@ def message(account, msgid, read=False, connect=None):
     allows it)."""
     check_msgid(msgid)
     spec = spec_for(account)
-    c = (connect or triage.Account(spec).connect)()
-    try:
+    with imap(spec, connect) as c:
         folders = ["INBOX", triage.CFG["later_folder"], all_mail(c), junk_folder(c)]
         found_in, uids = locate(c, msgid, folders)
         if not uids:
@@ -221,11 +274,6 @@ def message(account, msgid, read=False, connect=None):
             c.select_folder(found_in)
             c.add_flags([uids[0]], [SEEN])
             seen = True
-    finally:
-        try:
-            c.logout()
-        except Exception:
-            pass
     msg = message_from_bytes(raw, policy=policy.default)
     try:
         when = parsedate_to_datetime(str(msg.get("Date"))).astimezone(triage.TZ).isoformat()
@@ -240,8 +288,7 @@ def message(account, msgid, read=False, connect=None):
 def listing(spec, folder, days, connect=None):
     """The newest messages of one account's folder ("inbox", "later" or "spam") with their
     read state. Read-only: listing never marks anything read."""
-    c = (connect or triage.Account(spec).connect)()
-    try:
+    with imap(spec, connect) as c:
         name = folder_for(c, folder)
         if not name or not c.folder_exists(name):
             return []
@@ -262,11 +309,6 @@ def listing(spec, folder, days, connect=None):
                             "subject": str(h.get("Subject", "")), "date": when,
                             "seen": SEEN in (data.get(b"FLAGS") or ())})
         return [m for m in out if m["msgid"]]
-    finally:
-        try:
-            c.logout()
-        except Exception:
-            pass
 
 
 def spam_for(spec, days, connect=None):
@@ -292,32 +334,43 @@ def list_spam(days=30):
     return list_folder("spam", days)
 
 
-def set_seen(account, msgids, seen, connect=None):
+def set_seen(account, msgids, seen, where=None, connect=None):
+    """Mark read or unread. `where` ("inbox", "later", "spam"), when the caller knows it, is
+    searched first; the search stops once every message is found (a Gmail message in the
+    inbox is the same message in All Mail, so its flag changes there too)."""
     spec = spec_for(account)
-    msgids = [check_msgid(m) for m in msgids]
-    if not msgids:
+    left = [check_msgid(m) for m in msgids]
+    if not left:
         return {"ok": True, "changed": 0}
-    c = (connect or triage.Account(spec).connect)()
-    try:
-        folders = ["INBOX", triage.CFG["later_folder"], junk_folder(c), all_mail(c)]
-        changed = 0
-        for f in folders:
-            if not (f and c.folder_exists(f)):
+    with imap(spec, connect) as c:
+        def folders():
+            if where in DESTS:
+                yield folder_for(c, where)
+            yield from ("INBOX", triage.CFG["later_folder"])
+            yield junk_folder(c)
+            yield all_mail(c)
+        changed, tried = 0, set()
+        for f in folders():
+            if not left:
+                break
+            if not f or f in tried:
+                continue
+            tried.add(f)
+            if f != "INBOX" and not c.folder_exists(f):
                 continue
             c.select_folder(f)
-            uids = set()
-            for msgid in msgids:
-                uids.update(c.search(["HEADER", "Message-ID", msgid]))
+            uids, found = set(), set()
+            for msgid in left:
+                hits = c.search(["HEADER", "Message-ID", msgid])
+                if hits:
+                    uids.update(hits)
+                    found.add(msgid)
             if uids:
                 (c.add_flags if seen else c.remove_flags)(sorted(uids), [SEEN])
                 changed += len(uids)
+            left = [m for m in left if m not in found]
         log.info("%s %d message(s) in %s", "read" if seen else "unread", changed, account)
         return {"ok": True, "changed": changed}
-    finally:
-        try:
-            c.logout()
-        except Exception:
-            pass
 
 
 def days(qs, default):
@@ -393,7 +446,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/seen":
                 if not body.get("account") or not isinstance(body.get("msgids"), list) or "seen" not in body:
                     raise ActionError(400, "need account, msgids and seen")
-                return set_seen(body["account"], [str(m) for m in body["msgids"]][:500], bool(body["seen"]))
+                return set_seen(body["account"], [str(m) for m in body["msgids"]][:500], bool(body["seen"]),
+                                where=body.get("where"))
             if not all(body.get(k) for k in ("account", "msgid", "to")):
                 raise ActionError(400, "need account, msgid and to")
             return move(body["account"], body["msgid"], body["to"])

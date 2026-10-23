@@ -215,3 +215,35 @@ def test_forwarded_message_does_not_replace_the_body(ax):
            b"--B\r\nContent-Type: text/html\r\n\r\n<p>See below</p>\r\n"
            b"--B\r\nContent-Type: message/rfc822\r\n\r\nFrom: b@y\r\nContent-Type: text/plain\r\n\r\nOld mail\r\n--B--\r\n")
     assert actions.readable(message_from_bytes(raw, policy=policy.default)) == "See below"
+
+
+def test_mark_read_looks_where_told_and_stops_when_found(ax):
+    imap = FakeIMAP({"INBOX": {1: raw("<a@1>")}, "Later": {5: raw("<l@1>")}, "[Gmail]/Spam": {}})
+    selected = []
+    real = imap.select_folder
+    imap.select_folder = lambda f, readonly=False: selected.append(f) or real(f, readonly)
+    actions.set_seen("a@x.com", ["<l@1>"], True, where="later", connect=lambda: imap)
+    assert selected == ["Later"] and imap.seen == {("Later", 5)}
+
+
+def test_logins_are_reused_and_dropped_when_broken(ax, monkeypatch):
+    made = []
+
+    class Conn(FakeIMAP):
+        alive = True
+        def noop(self):
+            if not self.alive:
+                raise OSError("gone")
+    def connect(self):
+        c = Conn({"INBOX": {1: raw("<a@1>")}, "Later": {}, "[Gmail]/Spam": {}})
+        made.append(c)
+        return c
+    monkeypatch.setattr(ax.Account, "connect", connect)
+    actions._pool.clear()
+    actions.set_seen("a@x.com", ["<a@1>"], True)
+    actions.set_seen("a@x.com", ["<a@1>"], False)
+    assert len(made) == 1                       # second call reused the login
+    made[0].alive = False
+    actions.set_seen("a@x.com", ["<a@1>"], True)
+    assert len(made) == 2                       # a dead one is replaced
+    actions._pool.clear()
