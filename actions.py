@@ -13,6 +13,9 @@ what is sitting in each account's spam folder. Off unless `actions:` is configur
     GET  /message?account=&msgid=[&read=1]
                                    {"account", "msgid", "folder", "from", "to", "cc", "date", "subject",
                                     "text", "link", "seen"}; peeked, unless read=1 marks it read
+    POST /unsubscribe {"account", "sender"}
+                                   {"ok", "method": "one-click"|"email"|"link", "detail"[, "url"]};
+                                   see unsubscribe.py
     POST /seen {"account", "msgids": [...], "seen": true|false[, "where": "inbox"|"later"|"spam"]}
                                    mark read or unread, wherever the messages are (`where` first)
     POST /move {"account", "msgid", "to": "inbox"|"later"|"spam"}
@@ -45,6 +48,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from imapclient.imapclient import ALL, JUNK
+
+import unsubscribe as unsub
 
 # The running triage module, handed over by start(). triage.py runs as __main__, so
 # `import triage` here would load a second copy with an empty config.
@@ -373,6 +378,52 @@ def set_seen(account, msgids, seen, where=None, connect=None):
         return {"ok": True, "changed": changed}
 
 
+def unsubscribe(account, sender, connect=None, post=None, send=None):
+    """Unsubscribe `account` from `sender`'s mailings, by the newest message it has from them."""
+    spec = spec_for(account)
+    try:
+        sender = unsub.check_sender(sender)
+    except unsub.UnsubError as e:
+        raise ActionError(e.status, str(e)) from None
+    if triage.q("SELECT 1 FROM messages WHERE account=? AND sender=? AND phishing=1 LIMIT 1", account, sender):
+        raise ActionError(403, "that sender sends phishing; unsubscribing would only confirm your address. Mark it spam.")
+    since = triage.now().date() - dt.timedelta(days=120)
+    newest = None   # (date, raw headers)
+    with imap(spec, connect) as c:
+        for f in (triage.CFG["later_folder"], "INBOX"):
+            if f != "INBOX" and not c.folder_exists(f):
+                continue
+            c.select_folder(f, readonly=True)
+            uids = c.search(["FROM", sender, "SINCE", since])
+            if not uids:
+                continue
+            uid = max(uids)
+            got = c.fetch([uid], ["INTERNALDATE", "BODY.PEEK[HEADER.FIELDS (LIST-UNSUBSCRIBE LIST-UNSUBSCRIBE-POST DATE)]"])[uid]
+            when = got.get(b"INTERNALDATE")
+            if newest is None or (when and newest[0] and when > newest[0]):
+                newest = (when, got[unsub.HEADERS])
+    if newest is None:
+        raise ActionError(404, "no mail from them in the last four months to unsubscribe with")
+    opts = unsub.options(newest[1])
+    try:
+        if opts["one_click"] and opts["https"]:
+            unsub.one_click(opts["https"][0], post)
+            method, detail, out = "one-click", opts["https"][0], {}
+        elif opts["mailto"]:
+            to = unsub.by_email(spec, opts["mailto"][0], send)
+            method, detail, out = "email", to, {}
+        elif opts["https"]:
+            method, detail, out = "link", opts["https"][0], {"url": opts["https"][0]}
+        else:
+            raise ActionError(404, "their mail has no unsubscribe link; mark it spam instead")
+    except unsub.UnsubError as e:
+        raise ActionError(e.status, str(e)) from None
+    triage.q("INSERT OR REPLACE INTO unsubscribed (account, sender, ts, method, detail) VALUES (?,?,?,?,?)",
+             account, sender, triage.now().isoformat(), method, detail[:500])
+    log.info("unsubscribe %s from %s: %s", account, sender, method)
+    return {"ok": True, "method": method, "detail": detail, **out}
+
+
 def days(qs, default):
     """?days= as 1-90; anything else is a 400, not a dropped connection."""
     try:
@@ -432,7 +483,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
-        if path not in ("/move", "/seen"):
+        if path not in ("/move", "/seen", "/unsubscribe"):
             return self._send(404, {"error": "not found"})
 
         def run():
@@ -443,6 +494,8 @@ class Handler(BaseHTTPRequestHandler):
                 body = json.loads(self.rfile.read(size) or b"{}")
             except ValueError:
                 raise ActionError(400, "body must be JSON")
+            if path == "/unsubscribe":
+                return unsubscribe(str(body.get("account", "")), body.get("sender"))
             if path == "/seen":
                 if not body.get("account") or not isinstance(body.get("msgids"), list) or "seen" not in body:
                     raise ActionError(400, "need account, msgids and seen")

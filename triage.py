@@ -106,6 +106,8 @@ def init(cfg, data_dir, llm=None, notify=None):
     CREATE TABLE IF NOT EXISTS contacts (addr TEXT PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS sent_ids (msgid TEXT PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT);
+    CREATE TABLE IF NOT EXISTS unsubscribed (
+      account TEXT, sender TEXT, ts TEXT, method TEXT, detail TEXT, PRIMARY KEY (account, sender));
     """)
     # gone_at: no longer in INBOX or Later (deleted, archived or spammed elsewhere). Added 2026-10-10.
     if "gone_at" not in {r[1] for r in _db.execute("PRAGMA table_info(messages)")}:
