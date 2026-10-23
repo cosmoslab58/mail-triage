@@ -94,10 +94,11 @@ def test_rescue_from_spam_is_recorded_before_it_reaches_the_inbox(ax):
     assert row == [("spam", "today", "You won", 1)]   # the watcher skips known msgids
 
 
-def test_read_only_account_only_moves_to_inbox(ax):
+def test_shared_box_is_never_filed_to_later_but_spam_is_fine(ax):
     with pytest.raises(actions.ActionError) as e:
-        actions.move("ro@x.com", "<a@1>", "spam", connect=box)
+        actions.move("ro@x.com", "<a@1>", "later", connect=box)
     assert e.value.status == 403
+    assert actions.move("ro@x.com", "<a@1>", "spam", connect=box)["moved_to"] == "[Gmail]/Spam"
 
 
 def test_missing_message_is_410_and_marked_gone(ax):
@@ -170,10 +171,9 @@ def test_mark_read_and_unread(ax):
     assert imap.seen == {("INBOX", 1)}
 
 
-def test_read_only_account_keeps_its_read_state(ax):
-    with pytest.raises(actions.ActionError) as e:
-        actions.set_seen("ro@x.com", ["<a@1>"], True, connect=box)
-    assert e.value.status == 403
+def test_shared_box_can_be_marked_read(ax):
+    imap = box()
+    assert actions.set_seen("ro@x.com", ["<a@1>"], True, connect=lambda: imap)["changed"] == 1
 
 
 def test_opening_with_read_marks_it_read(ax):

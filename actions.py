@@ -21,8 +21,10 @@ what is sitting in each account's spam folder. Off unless `actions:` is configur
 A move is recorded as a correction (`corrected` = the tier it moved to), the same signal as
 moving the message by hand, so the classifier learns from it. A message rescued from spam is
 recorded before it lands in the inbox, so the watcher does not sort it all over again.
-Accounts with `move: false` only accept moves to the inbox, and their read state is never
-changed (another system, like a helpdesk, may be reading those boxes by it).
+Accounts with `move: false` (boxes another system, like a helpdesk, also reads) are never
+filed to Later, here or by the sorter; but the owner may mark them read or unread and move
+mail to Spam or back to the inbox. Helpdesks such as EspoCRM fetch by UID, not by the read
+flag, so neither hides mail from them.
 """
 from __future__ import annotations
 
@@ -146,8 +148,8 @@ def move(account, msgid, dest, connect=None):
         raise ActionError(400, f"'to' must be one of {', '.join(DESTS)}")
     check_msgid(msgid)
     spec = spec_for(account)
-    if not spec.get("move", True) and dest != "inbox":
-        raise ActionError(403, f"{account} is read-only here (move: false)")
+    if not spec.get("move", True) and dest == "later":
+        raise ActionError(403, f"{account} is never filed to Later (move: false)")
     c = (connect or triage.Account(spec).connect)()
     try:
         target = folder_for(c, dest)
@@ -215,7 +217,7 @@ def message(account, msgid, read=False, connect=None):
         c.select_folder(found_in, readonly=True)
         got = c.fetch([uids[0]], ["FLAGS", "BODY.PEEK[]"])[uids[0]]
         raw, seen = got[b"BODY[]"], SEEN in (got.get(b"FLAGS") or ())
-        if read and not seen and spec.get("move", True):
+        if read and not seen:
             c.select_folder(found_in)
             c.add_flags([uids[0]], [SEEN])
             seen = True
@@ -292,8 +294,6 @@ def list_spam(days=30):
 
 def set_seen(account, msgids, seen, connect=None):
     spec = spec_for(account)
-    if not spec.get("move", True):
-        raise ActionError(403, f"{account} is read-only here (move: false)")
     msgids = [check_msgid(m) for m in msgids]
     if not msgids:
         return {"ok": True, "changed": 0}
