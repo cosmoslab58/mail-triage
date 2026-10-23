@@ -25,6 +25,19 @@ It works with any IMAP mailbox (Gmail, Fastmail, iCloud, Purelymail, your own se
 - **Learning:** every 15 minutes it compares where its recent decisions are now. This reads Message-IDs only: no content, no model call.
 - **Dead-man switch (optional):** it pings Uptime Kuma or healthchecks.io every minute, and only while every account is healthy. If it goes quiet, your monitor alerts you.
 
+## To-dos and calendar (optional)
+
+Give it a CalDAV server (`caldav:` in the config) and it also acts as a secretary:
+
+- A "now" or "today" email that asks you to do something becomes a **to-do**, due on the deadline the email gives (or today). "Now" ones are top priority. Gmail to-dos link to the message.
+- An appointment, booking, flight or meeting in any email becomes a **calendar event**. Repeats of the same booking (confirmation, reminder) are merged, and past dates are skipped.
+- **Tick a to-do off** (or delete it) in any CalDAV app (Tasks.org, Thunderbird, Apple Reminders, DAVx5 + any Android app) and the email is marked read.
+- **Move the email to `Later`, or delete it**, and the to-do closes itself. Reading the email does not: a read-and-forgotten email is exactly what the list is for.
+- The daily digest says how many to-dos are still open.
+- `triage.py backfill [DAYS]` creates to-dos and events for unread "now"/"today" mail already in your inbox (default 14 days).
+
+Accounts with `move: false` are never touched; their to-dos just close.
+
 ## Quick start
 
 ```sh
@@ -78,6 +91,7 @@ venv/bin/python fold_folders.py you@gmail.com Newsletters Bulk Shopping --apply
 ```
 triage.py run                      the service
 triage.py try ACCOUNT [N]          classify the last N inbox messages, print only
+triage.py backfill [DAYS]          to-dos/events for unread now/today mail (needs caldav:)
 triage.py digest [daily|weekly]    send a digest now
 triage.py contacts                 rebuild the known-correspondents list from Sent folders
 ```

@@ -51,6 +51,14 @@ later_folder: Later
 #   listen: 0.0.0.0:8941             # inside the container; publish as 127.0.0.1:8941:8941
 #   token_env: TRIAGE_ACTIONS_TOKEN  # Authorization: Bearer <token> on every request
 body_chars: 2500                   # how much of each body the model sees
+# Optional: your secretary. Mail that asks you to do something becomes a to-do, appointments
+# and bookings become calendar events, on any CalDAV server (Radicale, Nextcloud, Fastmail...).
+# Ticking a to-do off in your app marks its email read (secretary.py).
+# caldav:
+#   todo_url: https://dav.example.com/alex/todo/           # a collection that holds VTODOs
+#   calendar_url: https://dav.example.com/alex/calendar/   # VEVENTs; leave out for to-dos only
+#   user_env: CALDAV_USER
+#   password_env: CALDAV_PASSWORD
 
 accounts:
   - {user: alex@gmail.com,   host: imap.gmail.com,    password_env: PW_ALEX_GMAIL}   # an app password

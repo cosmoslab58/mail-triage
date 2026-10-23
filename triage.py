@@ -14,6 +14,7 @@ Usage:
   triage.py try <account> [N]         classify the last N INBOX messages and print, no side effects
   triage.py digest [daily|weekly]     send a digest now
   triage.py contacts                  refresh the known-correspondents list from Sent folders
+  triage.py backfill [DAYS]           to-dos/events for unread now/today mail already in INBOX (caldav)
 """
 import datetime as dt
 import html
@@ -37,6 +38,7 @@ from imapclient.imapclient import SENT
 
 import notifiers
 import providers
+import secretary
 
 TIERS = ("now", "today", "later")
 DEFAULTS = {
@@ -105,6 +107,7 @@ def init(cfg, data_dir, llm=None, notify=None):
     # gone_at: no longer in INBOX or Later (deleted, archived or spammed elsewhere). Added 2026-10-10.
     if "gone_at" not in {r[1] for r in _db.execute("PRAGMA table_info(messages)")}:
         _db.execute("ALTER TABLE messages ADD COLUMN gone_at TEXT")
+    secretary.setup(cfg.get("caldav"), sys.modules[__name__])
 
 
 def q(sql, *args):
@@ -185,7 +188,7 @@ def describe(raw, body_chars=2500):
 
 def schema():
     owner = CFG["owner"]
-    return {
+    out = {
         "type": "object",
         "properties": {
             "tier": {"type": "string", "enum": list(TIERS)},
@@ -198,6 +201,11 @@ def schema():
         "required": ["tier", "category", "summary", "reason", "phishing"],
         "additionalProperties": False,
     }
+    if secretary.enabled():
+        extra = secretary.schema_fields(owner)
+        out["properties"].update(extra)
+        out["required"] += list(extra)
+    return out
 
 
 def instructions():
@@ -214,7 +222,8 @@ mismatch between display name and sending domain, is a strong phishing signal.
 Phishing always goes to later with phishing=true.
 
 The summary is what {owner} reads on their phone instead of the email: plain, specific,
-no hype, and lead with the action if there is one."""
+no hype, and lead with the action if there is one.""" + (
+        secretary.INSTRUCTIONS.format(owner=owner) if secretary.enabled() else "")
 
 
 def corrections_block():
@@ -264,6 +273,7 @@ def apply_rules(out, m, known, reply_to_me):
 class Account(threading.Thread):
     def __init__(self, spec):
         super().__init__(name=spec["user"], daemon=True)
+        self.spec = spec
         self.user, self.host = spec["user"], spec["host"]
         self.port = spec.get("port", 993)
         self.password = os.environ.get(spec["password_env"], "")
@@ -364,6 +374,10 @@ class Account(threading.Thread):
           tier, out["category"], out["summary"], out["reason"], int(out["phishing"]), int(m["bulk"]),
           notified, applied)
         log.info("%-5s %-28s %s | %s", tier.upper(), m["sender"][:28], m["subject"][:60], out["reason"])
+        try:
+            secretary.record(self.spec, m, out, tier)
+        except Exception:
+            log.exception("could not queue to-do/events for %s", m["msgid"])
 
     # -- corrections ----------------------------------------------------------
     def ids_since(self, c, folder, days=21):
@@ -421,6 +435,7 @@ class Account(threading.Thread):
                 c.idle_check(timeout=240)
                 c.idle_done()
                 self.process_new(c)
+                secretary.mark_read(self.user, self.move, c)
                 if time.time() - self.last_corrections > 900:
                     self.scan_corrections(c)
                     c.select_folder("INBOX")
@@ -483,6 +498,11 @@ def daily_digest():
     parts = [line(r) for r in today] or ["_Nothing needs you today._"]
     verb = "would have filed (shadow mode)" if CFG["shadow"] else "filed"
     parts.append(f"\n{pushed} already pushed · {later} {verb} to {CFG['later_folder']}")
+    if secretary.enabled():
+        n, oldest = secretary.open_todos()
+        if n:
+            age = (now().date() - dt.date.fromisoformat(oldest[:10])).days
+            parts.append(f"{n} open to-do{'s' if n != 1 else ''}" + (f", oldest {age} days" if age > 1 else ""))
     NOTIFY.send(f"📥 Today: {len(today)} to look at", "\n".join(parts), CFG["digest_level"])
     q("UPDATE messages SET digested=1 WHERE digested=0 AND ts > ?", since)
 
@@ -584,6 +604,38 @@ def cmd_try(user, n=10):
     c.logout()
 
 
+def cmd_backfill(days=14):
+    """Re-read unread now/today mail still in INBOX and queue its to-dos and events. Tiers
+    are left as they were; only the new fields are used."""
+    if not secretary.enabled():
+        raise SystemExit("backfill needs caldav: in the config")
+    since = (now() - dt.timedelta(days=int(days))).isoformat()
+    for spec in CFG["accounts"]:
+        rows = dict(q("""SELECT msgid, COALESCE(corrected, tier) FROM messages m WHERE account=? AND ts > ?
+                         AND gone_at IS NULL AND COALESCE(corrected, tier) IN ('now','today')
+                         AND NOT EXISTS (SELECT 1 FROM dav d WHERE d.account=m.account AND d.msgid=m.msgid)""",
+                      spec["user"], since))
+        if not rows:
+            continue
+        c = Account(spec).connect()
+        c.select_folder("INBOX", readonly=True)
+        for msgid, tier in rows.items():
+            uids = c.search(["UNSEEN", "HEADER", "Message-ID", msgid])
+            if not uids:
+                continue
+            raw = c.fetch(uids[:1], ["BODY.PEEK[]<0.300000>"])[uids[0]]
+            raw = next(v for k, v in raw.items() if k.startswith(b"BODY["))
+            m = describe(raw, CFG["body_chars"])
+            known = bool(q("SELECT 1 FROM contacts WHERE addr=?", m["sender"]))
+            reply = any(q("SELECT 1 FROM sent_ids WHERE msgid=?", r) for r in m["refs"])
+            out = classify(spec["user"], m, known, reply)
+            secretary.record(spec, {**m, "msgid": msgid}, out, tier)
+            print(f"{tier:5} {m['subject'][:50]:50} todo={out.get('todo')!r} events={len(out.get('events') or [])}",
+                  flush=True)
+        c.logout()
+    secretary.push()
+
+
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(threadName)s %(levelname)s %(message)s")
     here = Path(__file__).resolve().parent
@@ -599,6 +651,8 @@ def main():
             a.refresh_contacts(c)
             c.logout()
         return None
+    if cmd == "backfill":
+        return cmd_backfill(*sys.argv[2:])
     if cmd == "digest":
         return weekly_digest() if sys.argv[2:] == ["weekly"] else daily_digest()
     if cmd != "run":
@@ -609,6 +663,7 @@ def main():
         Account(spec).start()
     import actions
     actions.start(CFG.get("actions"), sys.modules[__name__])
+    secretary.start()
     scheduler()
     return None
 
