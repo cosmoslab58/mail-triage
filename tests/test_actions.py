@@ -15,6 +15,7 @@ class FakeIMAP:
 
     def __init__(self, folders, junk="[Gmail]/Spam"):
         self.folders, self.junk, self.sel, self.moves = folders, junk, None, []
+        self.seen, self.readonly = set(), {}   # (folder, uid) that are read; folder -> last select mode
 
     def find_special_folder(self, flag):
         return self.junk if self.junk in self.folders else None
@@ -24,6 +25,7 @@ class FakeIMAP:
 
     def select_folder(self, f, readonly=False):
         self.sel = f
+        self.readonly[f] = readonly
 
     def search(self, crit):
         if crit[0] == "HEADER":
@@ -31,7 +33,16 @@ class FakeIMAP:
         return list(self.folders[self.sel])
 
     def fetch(self, uids, parts):
-        return {u: {HDR: self.folders[self.sel][u], b"BODY[]": self.folders[self.sel][u]} for u in uids}
+        return {u: {HDR: self.folders[self.sel][u], b"BODY[]": self.folders[self.sel][u],
+                    b"FLAGS": (actions.SEEN,) if (self.sel, u) in self.seen else ()} for u in uids}
+
+    def add_flags(self, uids, flags):
+        assert not self.readonly[self.sel]
+        self.seen.update((self.sel, u) for u in uids)
+
+    def remove_flags(self, uids, flags):
+        assert not self.readonly[self.sel]
+        self.seen.difference_update((self.sel, u) for u in uids)
 
     def move(self, uids, dest):
         for u in uids:
@@ -141,3 +152,33 @@ def test_message_gone_is_410(ax):
     with pytest.raises(actions.ActionError) as e:
         actions.message("a@x.com", "<nope@1>", connect=box)
     assert e.value.status == 410
+
+
+def test_folder_listing_shows_read_state_without_changing_it(ax):
+    imap = FakeIMAP({"INBOX": {1: raw("<a@1>"), 2: raw("<b@1>", "Two")}, "Later": {}, "[Gmail]/Spam": {}})
+    imap.seen.add(("INBOX", 1))
+    items = actions.listing({"user": "a@x.com"}, "inbox", 14, connect=lambda: imap)
+    assert {m["msgid"]: m["seen"] for m in items} == {"<a@1>": True, "<b@1>": False}
+    assert imap.readonly["INBOX"] is True
+
+
+def test_mark_read_and_unread(ax):
+    imap = FakeIMAP({"INBOX": {1: raw("<a@1>")}, "Later": {5: raw("<l@1>")}, "[Gmail]/Spam": {}})
+    out = actions.set_seen("a@x.com", ["<a@1>", "<l@1>"], True, connect=lambda: imap)
+    assert out["changed"] == 2 and imap.seen == {("INBOX", 1), ("Later", 5)}
+    actions.set_seen("a@x.com", ["<l@1>"], False, connect=lambda: imap)
+    assert imap.seen == {("INBOX", 1)}
+
+
+def test_read_only_account_keeps_its_read_state(ax):
+    with pytest.raises(actions.ActionError) as e:
+        actions.set_seen("ro@x.com", ["<a@1>"], True, connect=box)
+    assert e.value.status == 403
+
+
+def test_opening_with_read_marks_it_read(ax):
+    imap = FakeIMAP({"INBOX": {1: raw("<a@1>")}, "Later": {}, "[Gmail]/Spam": {}})
+    assert actions.message("a@x.com", "<a@1>", connect=lambda: imap)["seen"] is False
+    assert imap.seen == set()                                   # peeked
+    assert actions.message("a@x.com", "<a@1>", read=True, connect=lambda: imap)["seen"] is True
+    assert imap.seen == {("INBOX", 1)}
