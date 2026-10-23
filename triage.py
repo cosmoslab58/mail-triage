@@ -285,6 +285,7 @@ class Account(threading.Thread):
         self.alerted = False
         self.last_corrections = 0
         self.last_contacts = 0
+        self.last_replies = 0
 
     def connect(self):
         c = IMAPClient(self.host, port=self.port, ssl=True, timeout=90)
@@ -438,6 +439,10 @@ class Account(threading.Thread):
                 c.idle_done()
                 self.process_new(c)
                 secretary.mark_read(self.user, self.move, c)
+                if time.time() - self.last_replies > secretary.POLL:
+                    secretary.check_replies(self.user, c)
+                    self.last_replies = time.time()
+                    c.select_folder("INBOX")
                 if time.time() - self.last_corrections > 900:
                     self.scan_corrections(c)
                     c.select_folder("INBOX")
@@ -480,8 +485,12 @@ def record_failure(account, uid, raw, err):
 
 
 def push_now(account, m, out):
+    """Tapping the push opens the message where the webmail can find it, else notify.click_url
+    (e.g. a to-do list or dashboard)."""
+    spec = next((a for a in CFG["accounts"] if a["user"] == account), {})
+    url = secretary.link_for(spec, m.get("msgid", "")) or (CFG.get("notify") or {}).get("click_url")
     return NOTIFY.send(f"{m['sender_name'][:40]}: {m['subject'][:60]}",
-                       f"{out['summary']}\n\n_{out['reason']} · {account}_", "urgent")
+                       f"{out['summary']}\n\n_{out['reason']} · {account}_", "urgent", url=url)
 
 
 # ---------------------------------------------------------------- digests
@@ -538,6 +547,8 @@ def deadman_status():
         return "up", f"starting ({len(accounts) - len(stale)}/{len(accounts)} connected)"
     if stale:
         return "down", "stale: " + ", ".join(stale)
+    if secretary.enabled() and secretary.health():
+        return "down", secretary.health()
     return "up", f"{len(accounts)} accounts ok"
 
 
@@ -573,7 +584,7 @@ def scheduler():
                 for account, msgid, sn, subj, summary, reason in q(
                         """SELECT account, msgid, sender_name, subject, summary, reason FROM messages
                            WHERE notified='held'"""):
-                    ok = push_now(account, {"sender_name": sn, "subject": subj},
+                    ok = push_now(account, {"sender_name": sn, "subject": subj, "msgid": msgid},
                                   {"summary": summary, "reason": reason + " (held overnight)"})
                     q("UPDATE messages SET notified=? WHERE account=? AND msgid=?",
                       "sent" if ok else "failed", account, msgid)

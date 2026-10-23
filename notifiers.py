@@ -30,17 +30,18 @@ class Notifier:
         name = self.cfg.get(key)
         return os.environ.get(name, "") if name else ""
 
-    def send(self, title, message, level="normal"):
+    def send(self, title, message, level="normal", url=None):
+        """url: what tapping the notification opens, where the service supports it."""
         if level not in LEVELS:
             raise ValueError(f"unknown level {level!r}")
         try:
-            self._send(title, message, level)
+            self._send(title, message, level, url)
             return True
         except Exception as e:
             log.error("%s push failed: %s", self.cfg.get("type"), e)
             return False
 
-    def _send(self, title, message, level):
+    def _send(self, title, message, level, url):
         raise NotImplementedError
 
 
@@ -48,10 +49,12 @@ class Gotify(Notifier):
     # Gotify Android buckets priorities into channels: 0 Min, 1-3 Low, 4-7 Normal, 8-10 High.
     PRIORITY = {"urgent": 8, "normal": 5, "low": 2}
 
-    def _send(self, title, message, level):
+    def _send(self, title, message, level, url):
+        extras = {"client::display": {"contentType": "text/markdown"}}
+        if url:
+            extras["client::notification"] = {"click": {"url": url}}
         _post(self.cfg["url"].rstrip("/") + "/message",
-              {"title": title, "message": message, "priority": self.PRIORITY[level],
-               "extras": {"client::display": {"contentType": "text/markdown"}}},
+              {"title": title, "message": message, "priority": self.PRIORITY[level], "extras": extras},
               {"X-Gotify-Key": self.secret("token_env")})
 
 
@@ -59,30 +62,30 @@ class Ntfy(Notifier):
     # ntfy priorities: 5 max/urgent, 4 high, 3 default, 2 low, 1 min.
     PRIORITY = {"urgent": 5, "normal": 3, "low": 2}
 
-    def _send(self, title, message, level):
+    def _send(self, title, message, level, url):
         headers = {}
         token = self.secret("token_env")
         if token:
             headers["Authorization"] = f"Bearer {token}"
         _post(self.cfg.get("url", "https://ntfy.sh").rstrip("/"),
               {"topic": self.cfg["topic"], "title": title, "message": message,
-               "priority": self.PRIORITY[level], "markdown": True}, headers)
+               "priority": self.PRIORITY[level], "markdown": True, **({"click": url} if url else {})}, headers)
 
 
 class Pushover(Notifier):
     PRIORITY = {"urgent": 1, "normal": 0, "low": -1}
 
-    def _send(self, title, message, level):
+    def _send(self, title, message, level, url):
         _post("https://api.pushover.net/1/messages.json",
               {"token": self.secret("token_env"), "user": self.secret("user_env"),
-               "title": title, "message": message, "priority": self.PRIORITY[level]},
+               "title": title, "message": message, "priority": self.PRIORITY[level], **({"url": url} if url else {})},
               {}, form=True)
 
 
 class Log(Notifier):
     """type: none. Logs what would have been pushed; handy for a first dry run."""
 
-    def _send(self, title, message, level):
+    def _send(self, title, message, level, url):
         log.info("[notify %s] %s | %s", level, title, message.replace("\n", " / ")[:300])
 
 

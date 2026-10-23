@@ -30,7 +30,10 @@ It works with any IMAP mailbox (Gmail, Fastmail, iCloud, Purelymail, your own se
 Give it a CalDAV server (`caldav:` in the config) and it also acts as a secretary:
 
 - A "now" or "today" email that asks you to do something becomes a **to-do**, due on the deadline the email gives (or today). "Now" ones are top priority. Gmail to-dos link to the message.
-- An appointment, booking, flight or meeting in any email becomes a **calendar event**. Repeats of the same booking (confirmation, reminder) are merged, and past dates are skipped.
+- **One conversation, one to-do:** a new message in the same thread updates its to-do instead of adding another. A to-do that only needs a reply closes itself once your reply is in Sent.
+- A to-do with a deadline from the email gets a reminder at 9:00 that day.
+- An appointment, booking, flight or meeting in any email becomes a **calendar event**. Repeats of the same booking (confirmation, reminder) are merged, past dates are skipped, and a later email that moves or cancels it moves or deletes the event.
+- If the CalDAV server stays unreachable for an hour, the dead-man ping reports down.
 - **Tick a to-do off** (or delete it) in any CalDAV app (Tasks.org, Thunderbird, Apple Reminders, DAVx5 + any Android app) and the email is marked read.
 - **Move the email to `Later`, or delete it**, and the to-do closes itself. Reading the email does not: a read-and-forgotten email is exactly what the list is for.
 - The daily digest says how many to-dos are still open.
@@ -67,7 +70,7 @@ The image is `ghcr.io/cosmoslab58/mail-triage` (amd64 and arm64, so a Raspberry 
 
 Only the SDK you use is imported. With a hosted provider, each email's sender, subject and opening text is sent to that provider; use a paid tier if you don't want it used for training.
 
-**Push** (`notify.type`): `gotify`, `ntfy`, `pushover`, or `none` (log only). Three levels map onto each service's priorities:
+**Push** (`notify.type`): `gotify`, `ntfy`, `pushover`, or `none` (log only). Tapping an urgent push opens the email (Gmail) or `notify.click_url`. Three levels map onto each service's priorities:
 
 | Level | Used for | Gotify | ntfy | Pushover |
 |---|---|---|---|---|

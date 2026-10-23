@@ -21,9 +21,11 @@ class FakeLLM:
 class FakeNotify:
     def __init__(self):
         self.sent = []
+        self.urls = []
 
-    def send(self, title, message, level="normal"):
+    def send(self, title, message, level="normal", url=None):
         self.sent.append((title, message, level))
+        self.urls.append(url)
         return True
 
 

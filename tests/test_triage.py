@@ -113,6 +113,8 @@ def test_notifier_levels_map_to_each_backend(monkeypatch):
     notifiers.make({"type": "ntfy", "topic": "x"}).send("t", "m", "low")
     notifiers.make({"type": "pushover"}).send("t", "m", "normal")
     assert [p["priority"] for p in posts] == [8, 2, 0]
+    notifiers.make({"type": "gotify", "url": "http://g"}).send("t", "m", "urgent", url="https://x")
+    assert posts[-1]["extras"]["client::notification"] == {"click": {"url": "https://x"}}
 
 
 def test_scan_marks_mail_that_left_inbox_and_later_as_gone(env):
