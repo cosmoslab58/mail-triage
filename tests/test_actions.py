@@ -1,3 +1,4 @@
+import datetime as dt
 """Moves go through IMAP and are recorded as corrections; the API refuses without its token."""
 import json
 import urllib.error
@@ -254,10 +255,11 @@ def test_logins_are_reused_and_dropped_when_broken(ax, monkeypatch):
 def test_search_finds_mail_in_every_folder_once_and_refuses_junk_queries():
     imap = FakeIMAP({"INBOX": {1: raw("<a@1>", "Your LL Bean order shipped")},
                      "Later": {2: raw("<b@2>", "LL Bean sale"), 3: raw("<c@3>", "Other")}}, junk="none")
-    out = actions.search({"user": "a@x.com"}, ["bean"], 30, connect=lambda: imap)
+    since = dt.date(2026, 1, 1)
+    out = actions.search({"user": "a@x.com"}, ["bean"], since, connect=lambda: imap)
     assert {m["msgid"] for m in out} == {"<a@1>", "<b@2>"}
     assert all(imap.readonly[f] for f in imap.readonly)   # searching never marks anything
-    assert actions.search({"user": "a@x.com"}, ["bean", "shipped"], 30, connect=lambda: imap)[0]["folder"] == "INBOX"
+    assert actions.search({"user": "a@x.com"}, ["bean", "shipped"], since, connect=lambda: imap)[0]["folder"] == "INBOX"
     assert actions.search_terms('x "bean"\r\nA1 LOGOUT') == ["bean", "A1", "LOGOUT"]
     with pytest.raises(actions.ActionError):
         actions.search_terms("  ")

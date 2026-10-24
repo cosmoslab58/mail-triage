@@ -358,10 +358,10 @@ def search_terms(query):
     return words
 
 
-def search(spec, words, days, connect=None):
-    """One account's mail matching every word (anywhere in the message), newest first. Gmail:
-    All Mail (inbox, archive and sent in one); elsewhere INBOX, Later and Sent. Read-only."""
-    since = triage.now().date() - dt.timedelta(days=days)
+def search(spec, words, since, before=None, oldest=False, connect=None):
+    """One account's mail matching every word (anywhere in the message) between two dates, the
+    newest (or with `oldest`, the oldest) per folder. Gmail: All Mail (inbox, archive and sent
+    in one); elsewhere INBOX, Later and Sent. Read-only."""
     out = []
     with imap(spec, connect) as c:
         folders = [all_mail(c)]
@@ -371,10 +371,11 @@ def search(spec, words, days, connect=None):
             if not f or not c.folder_exists(f):
                 continue
             c.select_folder(f, readonly=True)
-            crit = ["SINCE", since]
+            crit = ["SINCE", since] + (["BEFORE", before] if before else [])
             for w in words:
                 crit += ["TEXT", w]
-            uids = sorted(c.search(crit, charset="UTF-8"))[-SEARCH_PER_FOLDER:]
+            found = sorted(c.search(crit, charset="UTF-8"))
+            uids = found[:SEARCH_PER_FOLDER] if oldest else found[-SEARCH_PER_FOLDER:]
             if not uids:
                 continue
             for data in c.fetch(uids, ["BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE MESSAGE-ID)]"]).values():
@@ -392,12 +393,12 @@ def search(spec, words, days, connect=None):
     return out
 
 
-def search_all(query, days):
+def search_all(query, since, before=None, oldest=False):
     """Every account at once; an account that fails is reported, not fatal."""
     words = search_terms(query)
     accounts = triage.CFG["accounts"]
     with ThreadPoolExecutor(max_workers=len(accounts) or 1) as pool:
-        futures = {pool.submit(search, a, words, days): a["user"] for a in accounts}
+        futures = {pool.submit(search, a, words, since, before, oldest): a["user"] for a in accounts}
     items, errors = [], {}
     for f, user in futures.items():
         try:
@@ -405,7 +406,7 @@ def search_all(query, days):
         except Exception as e:
             errors[user] = f"{type(e).__name__}: {e}"
     seen, unique = set(), []
-    for m in sorted(items, key=lambda m: m["date"], reverse=True):
+    for m in sorted(items, key=lambda m: m["date"], reverse=not oldest):
         if (m["account"], m["msgid"]) not in seen:   # the same message in two folders
             seen.add((m["account"], m["msgid"]))
             unique.append(m)
@@ -548,11 +549,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"error": f"name must be one of {', '.join(DESTS)}"})
             return self._handle(lambda: list_folder(name, days(qs, 14)))
         if url.path == "/search":
+            # after/before (YYYY-MM-DD) or days back; oldest=1 lists the earliest matches first
             try:
-                span = min(max(int(qs.get("days", ["365"])[0]), 1), 3650)
+                today = triage.now().date()
+                after = qs.get("after", [""])[0]
+                since = dt.date.fromisoformat(after) if after else \
+                    today - dt.timedelta(days=min(max(int(qs.get("days", ["365"])[0]), 1), 3650))
+                before = qs.get("before", [""])[0]
+                before = dt.date.fromisoformat(before) if before else None
             except ValueError:
-                return self._send(400, {"error": "days must be a number"})
-            return self._handle(lambda: search_all(qs.get("q", [""])[0], span))
+                return self._send(400, {"error": "days must be a number, after/before YYYY-MM-DD"})
+            oldest = qs.get("oldest", [""])[0] == "1"
+            return self._handle(lambda: search_all(qs.get("q", [""])[0], since, before, oldest))
         if url.path == "/message":
             account, msgid = qs.get("account", [""])[0], qs.get("msgid", [""])[0]
             if not (account and msgid):
