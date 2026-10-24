@@ -27,13 +27,15 @@ class FakeIMAP:
         self.sel = f
         self.readonly[f] = readonly
 
-    def search(self, crit):
+    def search(self, crit, charset=None):
         if crit[0] == "HEADER":
             return [u for u, raw in self.folders[self.sel].items() if crit[2].encode() in raw]
-        return list(self.folders[self.sel])
+        words = [crit[i + 1] for i, c in enumerate(crit) if c == "TEXT"]
+        return [u for u, raw in self.folders[self.sel].items() if all(w.lower().encode() in raw.lower() for w in words)]
 
     def fetch(self, uids, parts):
-        return {u: {HDR: self.folders[self.sel][u], b"BODY[]": self.folders[self.sel][u],
+        return {u: {HDR: self.folders[self.sel][u], actions.HEADERS_TO: self.folders[self.sel][u],
+                    b"BODY[]": self.folders[self.sel][u],
                     b"FLAGS": (actions.SEEN,) if (self.sel, u) in self.seen else ()} for u in uids}
 
     def add_flags(self, uids, flags):
@@ -247,3 +249,15 @@ def test_logins_are_reused_and_dropped_when_broken(ax, monkeypatch):
     actions.set_seen("a@x.com", ["<a@1>"], True)
     assert len(made) == 2                       # a dead one is replaced
     actions._pool.clear()
+
+
+def test_search_finds_mail_in_every_folder_once_and_refuses_junk_queries():
+    imap = FakeIMAP({"INBOX": {1: raw("<a@1>", "Your LL Bean order shipped")},
+                     "Later": {2: raw("<b@2>", "LL Bean sale"), 3: raw("<c@3>", "Other")}}, junk="none")
+    out = actions.search({"user": "a@x.com"}, ["bean"], 30, connect=lambda: imap)
+    assert {m["msgid"] for m in out} == {"<a@1>", "<b@2>"}
+    assert all(imap.readonly[f] for f in imap.readonly)   # searching never marks anything
+    assert actions.search({"user": "a@x.com"}, ["bean", "shipped"], 30, connect=lambda: imap)[0]["folder"] == "INBOX"
+    assert actions.search_terms('x "bean"\r\nA1 LOGOUT') == ["bean", "A1", "LOGOUT"]
+    with pytest.raises(actions.ActionError):
+        actions.search_terms("  ")

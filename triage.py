@@ -390,7 +390,9 @@ class Account(threading.Thread):
                 applied = 1
         notified = None
         if tier == "now":
-            notified = "held" if in_quiet_hours() else ("sent" if push_now(self.user, m, out) else "failed")
+            # quiet hours hold urgent mail till morning, but never an emergency
+            held = in_quiet_hours() and not out.get("emergency")
+            notified = "held" if held else ("sent" if push_now(self.user, m, out) else "failed")
         q("""INSERT OR IGNORE INTO messages (account,msgid,ts,sender,sender_name,subject,tier,category,
              summary,reason,phishing,bulk,notified,applied,emergency) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
           self.user, m["msgid"], now().isoformat(), m["sender"], m["sender_name"], m["subject"],

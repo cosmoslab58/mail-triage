@@ -47,7 +47,7 @@ from email.utils import parseaddr, parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from imapclient.imapclient import ALL, JUNK
+from imapclient.imapclient import ALL, JUNK, SENT
 
 import unsubscribe as unsub
 
@@ -60,6 +60,7 @@ DESTS = ("inbox", "later", "spam")
 TIER = {"inbox": "today", "later": "later", "spam": "spam"}
 JUNK_NAMES = ("Junk", "Spam", "[Gmail]/Spam", "Junk E-mail", "Junk Email")
 HEADERS = b"BODY[HEADER.FIELDS (FROM SUBJECT DATE MESSAGE-ID)]"
+HEADERS_TO = b"BODY[HEADER.FIELDS (FROM TO SUBJECT DATE MESSAGE-ID)]"
 SEEN = b"\\Seen"
 PER_FOLDER = 100   # newest messages listed per account and folder
 
@@ -339,6 +340,76 @@ def list_spam(days=30):
     return list_folder("spam", days)
 
 
+SEARCH_PER_FOLDER = 20
+
+
+def search_terms(query):
+    """Up to five plain words; nothing that could break out of an IMAP string."""
+    words = [w[:40] for w in re.findall(r"[\w@.'-]+", query or "") if len(w) > 1][:5]
+    if not words:
+        raise ActionError(400, "give some words to search for")
+    return words
+
+
+def search(spec, words, days, connect=None):
+    """One account's mail matching every word (anywhere in the message), newest first. Gmail:
+    All Mail (inbox, archive and sent in one); elsewhere INBOX, Later and Sent. Read-only."""
+    since = triage.now().date() - dt.timedelta(days=days)
+    out = []
+    with imap(spec, connect) as c:
+        folders = [all_mail(c)]
+        if not folders[0]:
+            sent = None
+            try:
+                sent = c.find_special_folder(SENT)
+            except Exception:
+                pass
+            folders = ["INBOX", triage.CFG["later_folder"], sent]
+        for f in folders:
+            if not f or not c.folder_exists(f):
+                continue
+            c.select_folder(f, readonly=True)
+            crit = ["SINCE", since]
+            for w in words:
+                crit += ["TEXT", w]
+            uids = sorted(c.search(crit, charset="UTF-8"))[-SEARCH_PER_FOLDER:]
+            if not uids:
+                continue
+            for data in c.fetch(uids, ["BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE MESSAGE-ID)]"]).values():
+                h = message_from_bytes(data[HEADERS_TO], policy=policy.default)
+                name_, addr = parseaddr(str(h.get("From", "")))
+                try:
+                    when = parsedate_to_datetime(str(h.get("Date"))).astimezone(triage.TZ).isoformat()
+                except Exception:
+                    when = ""
+                msgid = (triage.ids_in(str(h.get("Message-ID", ""))) or [""])[0]
+                if msgid:
+                    out.append({"account": spec["user"], "msgid": msgid, "folder": f, "date": when,
+                                "sender": addr.lower(), "sender_name": name_ or addr,
+                                "to": str(h.get("To", ""))[:200], "subject": str(h.get("Subject", ""))})
+    return out
+
+
+def search_all(query, days):
+    """Every account at once; an account that fails is reported, not fatal."""
+    words = search_terms(query)
+    accounts = triage.CFG["accounts"]
+    with ThreadPoolExecutor(max_workers=len(accounts) or 1) as pool:
+        futures = {pool.submit(search, a, words, days): a["user"] for a in accounts}
+    items, errors = [], {}
+    for f, user in futures.items():
+        try:
+            items += f.result()
+        except Exception as e:
+            errors[user] = f"{type(e).__name__}: {e}"
+    seen, unique = set(), []
+    for m in sorted(items, key=lambda m: m["date"], reverse=True):
+        if (m["account"], m["msgid"]) not in seen:   # the same message in two folders
+            seen.add((m["account"], m["msgid"]))
+            unique.append(m)
+    return {"items": unique[:40], "errors": errors}
+
+
 def set_seen(account, msgids, seen, where=None, connect=None):
     """Mark read or unread. `where` ("inbox", "later", "spam"), when the caller knows it, is
     searched first; the search stops once every message is found (a Gmail message in the
@@ -474,6 +545,12 @@ class Handler(BaseHTTPRequestHandler):
             if name not in DESTS:
                 return self._send(400, {"error": f"name must be one of {', '.join(DESTS)}"})
             return self._handle(lambda: list_folder(name, days(qs, 14)))
+        if url.path == "/search":
+            try:
+                span = min(max(int(qs.get("days", ["365"])[0]), 1), 3650)
+            except ValueError:
+                return self._send(400, {"error": "days must be a number"})
+            return self._handle(lambda: search_all(qs.get("q", [""])[0], span))
         if url.path == "/message":
             account, msgid = qs.get("account", [""])[0], qs.get("msgid", [""])[0]
             if not (account and msgid):
