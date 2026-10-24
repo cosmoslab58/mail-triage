@@ -136,3 +136,14 @@ def test_digests_can_be_switched_off(env, tmp_path):
         cfg.write_text(f"owner: A\ntimezone: UTC\nllm: {{provider: gemini, model: x}}\n"
                        f"accounts: [{{user: a}}]\ndigest_time: {value}\n")
         assert triage.load_config(cfg)["digest_time"] is None
+
+
+def test_an_emergency_is_always_pushed_and_never_phishing(env):
+    triage, llm, _ = env
+    m = triage.describe(RAW)
+    llm.reply.update(tier="today", emergency=True)
+    assert triage.classify("a@x.com", m, known=False, reply_to_me=False)["tier"] == "now"
+    llm.reply.update(tier="now", emergency=True, phishing=True)
+    out = triage.classify("a@x.com", m, known=False, reply_to_me=False)
+    assert out["tier"] == "later" and not out["emergency"]
+    assert "emergency" in triage.schema()["required"]
