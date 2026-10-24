@@ -3,6 +3,7 @@
     caldav:
       todo_url: https://dav.example.com/alex/todo/           # a VTODO collection
       calendar_url: https://dav.example.com/alex/calendar/   # a VEVENT collection (optional)
+      contacts_url: https://dav.example.com/alex/contacts/   # a CardDAV address book (optional, read only)
       user_env: CALDAV_USER
       password_env: CALDAV_PASSWORD
 
@@ -25,6 +26,7 @@ import base64
 import datetime as dt
 import logging
 import os
+import re
 import threading
 import time
 import urllib.error
@@ -364,6 +366,20 @@ def _http(method, url, body=None, headers=None):
         if e.code in (404, 410, 412):
             return e.code, "", None
         raise
+
+
+def contact_emails():
+    """Email addresses in the address book at `contacts_url` (optional), lowercased. The sorter
+    counts them as known people, the same as addresses the owner has written to."""
+    url = (CFG or {}).get("contacts_url")
+    if not url:
+        return set()
+    status, text, _ = _http("GET", url)
+    if status != 200:
+        raise RuntimeError(f"address book {url}: HTTP {status}")
+    text = re.sub(r"\r?\n[ \t]", "", text)   # unfold
+    found = re.findall(r"^(?:[\w-]+\.)?EMAIL[^:\n]*:(.+?)\r?$", text, re.M | re.I)
+    return {e.strip().lower() for e in found if "@" in e}
 
 
 def href(row):

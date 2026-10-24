@@ -34,6 +34,7 @@ Give it a CalDAV server (`caldav:` in the config) and it also acts as a secretar
 - A to-do with a deadline from the email gets a reminder at 9:00 that day.
 - An appointment, booking, flight or meeting in any email becomes a **calendar event**. Repeats of the same booking (confirmation, reminder) are merged, past dates are skipped, and a later email that moves or cancels it moves or deletes the event.
 - If the CalDAV server stays unreachable for an hour, the dead-man ping reports down.
+- Give it `contacts_url` (a CardDAV address book) and every email address in it counts as someone you know, the same as people you have written to.
 - **Tick a to-do off** (or delete it) in any CalDAV app (Tasks.org, Thunderbird, Apple Reminders, DAVx5 + any Android app) and the email is marked read.
 - **Move the email to `Later`, or delete it**, and the to-do closes itself. Reading the email does not: a read-and-forgotten email is exactly what the list is for.
 - The daily digest says how many to-dos are still open.
@@ -98,7 +99,7 @@ triage.py run                      the service
 triage.py try ACCOUNT [N]          classify the last N inbox messages, print only
 triage.py backfill [DAYS]          to-dos/events for unread now/today mail (needs caldav:)
 triage.py digest [daily|weekly]    send a digest now
-triage.py contacts                 rebuild the known-correspondents list from Sent folders
+triage.py contacts                 rebuild the known-correspondents list from Sent folders (+ the address book, if `contacts_url` is set)
 ```
 
 ## Notes

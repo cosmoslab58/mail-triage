@@ -351,3 +351,15 @@ def test_a_row_changed_mid_sync_keeps_its_change(sec, monkeypatch):
     monkeypatch.setattr(secretary, "_http", put_then_email_arrives)
     secretary.push()
     assert triage.q("SELECT state FROM dav")[0][0] == "dirty"   # not overwritten to open
+
+
+def test_address_book_emails_count_as_known(sec, monkeypatch):
+    triage, llm, notify, dav = sec
+    secretary.CFG["contacts_url"] = "https://dav/x/contacts/"
+    dav.store["https://dav/x/contacts/"] = ("BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Pat\r\nitem1.EMAIL;TYPE=INTERNET:Pat@Example.com\r\n"
+                                           "EMAIL;TYPE=WORK:pat.work@exam\r\n ple.org\r\nTEL:555\r\nEND:VCARD\r\n"
+                                           "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:No mail\r\nEND:VCARD\r\n")
+    assert secretary.contact_emails() == {"pat@example.com", "pat.work@example.org"}
+    dav.store.clear()   # a missing book raises, so the refresh logs it and keeps the Sent addresses
+    with pytest.raises(RuntimeError):
+        secretary.contact_emails()

@@ -13,7 +13,7 @@ Usage:
   triage.py run                       the service
   triage.py try <account> [N]         classify the last N INBOX messages and print, no side effects
   triage.py digest [daily|weekly]     send a digest now
-  triage.py contacts                  refresh the known-correspondents list from Sent folders
+  triage.py contacts                  refresh the known-correspondents list from Sent folders + address book
   triage.py backfill [DAYS]           to-dos/events for unread now/today mail already in INBOX (caldav)
 """
 import datetime as dt
@@ -304,21 +304,24 @@ class Account(threading.Thread):
             log.info("created and subscribed folder %s", self.later)
 
     def refresh_contacts(self, c):
-        sent = c.find_special_folder(SENT)
-        if not sent:
-            return
-        c.select_folder(sent, readonly=True)
-        uids = c.search(["SINCE", now().date() - dt.timedelta(days=730)])
         addrs, ids = set(), set()
-        for i in range(0, len(uids), 500):
-            for data in c.fetch(uids[i:i + 500], ["BODY.PEEK[HEADER.FIELDS (TO CC MESSAGE-ID)]"]).values():
-                h = message_from_bytes(data[b"BODY[HEADER.FIELDS (TO CC MESSAGE-ID)]"])
-                addrs |= {a.lower() for _, a in getaddresses(h.get_all("To", []) + h.get_all("Cc", [])) if a}
-                ids |= set(ids_in(h.get("Message-ID", "")))
+        try:
+            addrs |= secretary.contact_emails()
+        except Exception as e:
+            log.warning("address book not read: %s", e)
+        sent = c.find_special_folder(SENT)
+        if sent:
+            c.select_folder(sent, readonly=True)
+            uids = c.search(["SINCE", now().date() - dt.timedelta(days=730)])
+            for i in range(0, len(uids), 500):
+                for data in c.fetch(uids[i:i + 500], ["BODY.PEEK[HEADER.FIELDS (TO CC MESSAGE-ID)]"]).values():
+                    h = message_from_bytes(data[b"BODY[HEADER.FIELDS (TO CC MESSAGE-ID)]"])
+                    addrs |= {a.lower() for _, a in getaddresses(h.get_all("To", []) + h.get_all("Cc", [])) if a}
+                    ids |= set(ids_in(h.get("Message-ID", "")))
         with _lock:
             _db.executemany("INSERT OR IGNORE INTO contacts VALUES (?)", [(a,) for a in addrs])
             _db.executemany("INSERT OR IGNORE INTO sent_ids VALUES (?)", [(i,) for i in ids])
-        log.info("contacts refreshed from %s: %d addresses, %d sent ids", sent, len(addrs), len(ids))
+        log.info("contacts refreshed from the address book and %s: %d addresses, %d sent ids", sent or "no Sent folder", len(addrs), len(ids))
         self.last_contacts = time.time()
 
     # -- new mail -----------------------------------------------------------
