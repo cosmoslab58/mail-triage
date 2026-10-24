@@ -171,6 +171,13 @@ def all_mail(c):
         return None
 
 
+def sent_folder(c):
+    try:
+        return c.find_special_folder(SENT)
+    except Exception:
+        return None
+
+
 def locate(c, msgid, folders):
     check_msgid(msgid)
     for f in folders:
@@ -269,7 +276,7 @@ def message(account, msgid, read=False, connect=None):
     check_msgid(msgid)
     spec = spec_for(account)
     with imap(spec, connect) as c:
-        folders = ["INBOX", triage.CFG["later_folder"], all_mail(c), junk_folder(c)]
+        folders = ["INBOX", triage.CFG["later_folder"], all_mail(c), junk_folder(c), sent_folder(c)]
         found_in, uids = locate(c, msgid, folders)
         if not uids:
             raise ActionError(410, "no longer in Inbox, Later or Spam (deleted or archived in your mail app)")
@@ -359,12 +366,7 @@ def search(spec, words, days, connect=None):
     with imap(spec, connect) as c:
         folders = [all_mail(c)]
         if not folders[0]:
-            sent = None
-            try:
-                sent = c.find_special_folder(SENT)
-            except Exception:
-                pass
-            folders = ["INBOX", triage.CFG["later_folder"], sent]
+            folders = ["INBOX", triage.CFG["later_folder"], sent_folder(c)]
         for f in folders:
             if not f or not c.folder_exists(f):
                 continue
