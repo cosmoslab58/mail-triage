@@ -1,5 +1,5 @@
-import datetime as dt
 """Moves go through IMAP and are recorded as corrections; the API refuses without its token."""
+import datetime as dt
 import json
 import urllib.error
 import urllib.request
