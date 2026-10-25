@@ -261,3 +261,19 @@ def test_search_finds_mail_in_every_folder_once_and_refuses_junk_queries():
     assert actions.search_terms('x "bean"\r\nA1 LOGOUT') == ["bean", "A1", "LOGOUT"]
     with pytest.raises(actions.ActionError):
         actions.search_terms("  ")
+
+
+def test_important_is_now_today_inbox_mail_without_a_to_do(ax):
+    now = ax.now().isoformat()
+    rows = [("<a@1>", "now", None, 0), ("<b@1>", "today", None, 0), ("<c@1>", "later", None, 0),
+            ("<d@1>", "today", "later", 0), ("<e@1>", "now", None, 1), ("<f@1>", "today", None, 0)]
+    for msgid, tier, corrected, phishing in rows:
+        ax.q("INSERT INTO messages (account,msgid,ts,sender,subject,tier,summary,corrected,phishing) VALUES (?,?,?,?,?,?,?,?,?)",
+             "a@x.com", msgid, now, "jo@example.com", "S " + msgid, tier, "sum", corrected, phishing)
+    ax._db.executescript("CREATE TABLE IF NOT EXISTS dav (uid TEXT, account TEXT, msgid TEXT, kind TEXT, msgids TEXT)")
+    ax.q("INSERT INTO dav (uid,account,msgid,kind,msgids) VALUES ('u','a@x.com','<b@1>','todo','<b@1>')")
+    inbox = {"items": [{"account": "a@x.com", "msgid": m, "seen": m == "<a@1>"} for m in ("<a@1>", "<b@1>", "<e@1>")],
+             "errors": {}}
+    out = actions.important(24, folder_fn=lambda name, days: inbox)
+    # b has a to-do, c is later, d was moved to Later, e is phishing, f left the inbox
+    assert [(m["msgid"], m["seen"]) for m in out["items"]] == [("<a@1>", True)]

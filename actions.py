@@ -10,6 +10,10 @@ what is sitting in each account's spam folder. Off unless `actions:` is configur
     GET  /folder?name=inbox|later&days=14
                                    {"items": [{"account", "msgid", "sender", "sender_name", "subject",
                                     "date", "seen"}], "errors": {account: message}}, newest first
+    GET  /important?hours=24        {"items": [{"account", "msgid", "sender_name", "subject", "summary", "tier",
+                                    "emergency", "seen", "date"}], "errors": {account: message}}
+                                   now/today mail still in the inbox that has NO to-do (the
+                                   secretary's), newest first: what a morning brief should mention
     GET  /message?account=&msgid=[&read=1]
                                    {"account", "msgid", "folder", "from", "to", "cc", "date", "subject",
                                     "text", "link", "seen"}; peeked, unless read=1 marks it read
@@ -341,6 +345,35 @@ def list_folder(folder, days=30):
     return {"items": items, "errors": errors}
 
 
+def important(hours=24, folder_fn=None):
+    """now/today mail from the last `hours` that is still in an inbox and has no to-do: the
+    important mail a to-do list alone would miss. Phishing, mail moved to Later or Spam, and
+    mail that left the inbox are left out; `seen` comes from the inbox itself."""
+    cutoff = (triage.now() - dt.timedelta(hours=hours)).isoformat()
+    rows = triage.q("""SELECT account, msgid, ts, sender_name, sender, subject, tier, summary, emergency
+                       FROM messages WHERE tier IN ('now','today') AND COALESCE(phishing,0)=0
+                       AND gone_at IS NULL AND (corrected IS NULL OR corrected IN ('now','today'))
+                       AND ts >= ? ORDER BY ts DESC""", cutoff)
+    has_todo = set()
+    if triage.q("SELECT name FROM sqlite_master WHERE type='table' AND name='dav'"):
+        for account, msgids in triage.q("SELECT account, COALESCE(msgids, msgid) FROM dav WHERE kind='todo'"):
+            has_todo |= {(account, m) for m in (msgids or "").split()}
+    rows = [r for r in rows if (r[0], r[1]) not in has_todo]
+    if not rows:
+        return {"items": [], "errors": {}}
+    inbox = (folder_fn or list_folder)("inbox", max(1, -(-hours // 24)) + 1)
+    seen = {(m["account"], m["msgid"]): m["seen"] for m in inbox["items"]}
+    failed = set(inbox["errors"])
+    items = []
+    for account, msgid, ts, name, sender, subject, tier, summary, emergency in rows:
+        if (account, msgid) not in seen and account not in failed:
+            continue   # no longer in the inbox
+        items.append({"account": account, "msgid": msgid, "sender_name": name or sender, "subject": subject,
+                      "summary": summary, "tier": tier, "emergency": bool(emergency),
+                      "seen": seen.get((account, msgid)), "date": ts})
+    return {"items": items, "errors": inbox["errors"]}
+
+
 def list_spam(days=30):
     return list_folder("spam", days)
 
@@ -559,6 +592,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"error": "days must be a number, after/before YYYY-MM-DD"})
             oldest = qs.get("oldest", [""])[0] == "1"
             return self._handle(lambda: search_all(qs.get("q", [""])[0], since, before, oldest))
+        if url.path == "/important":
+            try:
+                hours = min(max(int(qs.get("hours", ["24"])[0]), 1), 24 * 14)
+            except ValueError:
+                return self._send(400, {"error": "hours must be a number"})
+            return self._handle(lambda: important(hours))
         if url.path == "/message":
             account, msgid = qs.get("account", [""])[0], qs.get("msgid", [""])[0]
             if not (account and msgid):
