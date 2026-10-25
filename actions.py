@@ -25,9 +25,9 @@ A move is recorded as a correction (`corrected` = the tier it moved to), the sam
 moving the message by hand, so the classifier learns from it. A message rescued from spam is
 recorded before it lands in the inbox, so the watcher does not sort it all over again.
 Accounts with `move: false` (boxes another system, like a helpdesk, also reads) are never
-filed to Later, here or by the sorter; but the owner may mark them read or unread and move
-mail to Spam or back to the inbox. Helpdesks such as EspoCRM fetch by UID, not by the read
-flag, so neither hides mail from them.
+filed to Later by the sorter; but the owner may mark them read or unread and move mail to
+Later, Spam or back to the inbox by hand. Helpdesks such as EspoCRM fetch by UID, not by the
+read flag, so marking never hides mail from them; a move out of INBOX does if it beats the fetch.
 """
 from __future__ import annotations
 
@@ -221,8 +221,6 @@ def move(account, msgid, dest, connect=None):
         raise ActionError(400, f"'to' must be one of {', '.join(DESTS)}")
     check_msgid(msgid)
     spec = spec_for(account)
-    if not spec.get("move", True) and dest == "later":
-        raise ActionError(403, f"{account} is never filed to Later (move: false)")
     with imap(spec, connect) as c:
         target = folder_for(c, dest)
         if not target:
