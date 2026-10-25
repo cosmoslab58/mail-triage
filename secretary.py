@@ -6,8 +6,6 @@
       contacts_url: https://dav.example.com/alex/contacts/   # a CardDAV address book (optional, read only)
       user_env: CALDAV_USER
       password_env: CALDAV_PASSWORD
-      todo_writer_url: http://172.17.0.1:8946/todo   # optional, see below
-      todo_writer_token_env: COLLECTOR_TOKEN
 
 The classifier also answers "is there something to do?" and "is there a date to keep?":
   - a now/today email that asks for action becomes a to-do (a "now" one at top priority),
@@ -21,18 +19,11 @@ Ticking one off, or deleting it, marks its emails read. Replying closes a to-do 
 needed a reply. Moving the email to Later or deleting it closes the to-do. Reading the email
 does NOT: read-and-forgotten is exactly what this is for.
 Mailboxes with `move: false` are never touched; their to-dos just close.
-
-With `todo_writer_url`, every to-do write (create, update, close) is POSTed there as
-{"name", "ics", "if_none_match", "if_match", "source": "mail"} with a Bearer token, and that
-service writes it to the list and answers {"status", "etag"} with the CalDAV server's reply. Use
-it when one service should be the only writer of to-dos. This module still decides when a to-do
-opens and closes, and still reads the list (and writes calendar events) directly.
 """
 from __future__ import annotations
 
 import base64
 import datetime as dt
-import json
 import logging
 import os
 import re
@@ -361,9 +352,6 @@ def completed(text):
 
 def _http(method, url, body=None, headers=None):
     """(status, text, etag). 404 and 412 come back as statuses, everything else raises."""
-    writer = CFG.get("todo_writer_url")
-    if writer and method == "PUT" and url.startswith(CFG["todo_url"].rstrip("/") + "/"):
-        return _writer_put(writer, url, body, headers or {})
     user = os.environ.get(CFG.get("user_env", "CALDAV_USER"), "")
     pw = os.environ.get(CFG.get("password_env", "CALDAV_PASSWORD"), "")
     auth = base64.b64encode(f"{user}:{pw}".encode()).decode()
@@ -378,21 +366,6 @@ def _http(method, url, body=None, headers=None):
         if e.code in (404, 410, 412):
             return e.code, "", None
         raise
-
-
-def _writer_put(writer, url, body, headers):
-    """A to-do write through the configured writer: its answer is the CalDAV server's."""
-    doc = {"name": url.rsplit("/", 1)[1], "ics": body, "source": "mail",
-           "if_none_match": headers.get("If-None-Match") == "*", "if_match": headers.get("If-Match")}
-    token = os.environ.get(CFG.get("todo_writer_token_env", "COLLECTOR_TOKEN"), "")
-    req = urllib.request.Request(writer, json.dumps(doc).encode(), method="POST",
-                                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            out = json.load(r)
-    except urllib.error.HTTPError as e:
-        raise RuntimeError(f"to-do writer: HTTP {e.code}") from None
-    return out["status"], "", out.get("etag")
 
 
 def contact_emails():
