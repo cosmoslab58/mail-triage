@@ -42,7 +42,9 @@ deadman:                           # optional: an external monitor that alerts w
   style: kuma                      # kuma (Uptime Kuma push monitor) | healthchecks (healthchecks.io)
   url_env: DEADMAN_URL
 
-quiet_hours: ["21:30", "07:00"]    # "now" pushes inside this window wait until it ends
+quiet_hours: ["21:30", "07:00"]    # "now" pushes inside this window wait until it ends; [] = never hold
+                                   # (let the push service decide). Emergencies are never held and go
+                                   # out at the notifier's top priority (Gotify 10).
 digest_time: "17:00"               # daily "today" digest; null for no digests at all (urgent pushes only)
 digest_level: normal               # its push level: normal (a sound) or low (silent, e.g. when
                                    # something else rolls it into a summary of its own)

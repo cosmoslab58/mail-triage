@@ -138,6 +138,9 @@ def now():
 
 
 def in_quiet_hours(t=None):
+    """quiet_hours [] means none: the push service decides what may ring at night."""
+    if not CFG["quiet_hours"]:
+        return False
     t = (t or now()).strftime("%H:%M")
     start, end = CFG["quiet_hours"]
     return (start <= t or t < end) if start > end else (start <= t < end)
@@ -518,7 +521,8 @@ def push_now(account, m, out):
                                      msgid=urllib.parse.quote(msgid, safe=""))
     url = url or secretary.link_for(spec, msgid) or cfg.get("click_url")
     return NOTIFY.send(f"{m['sender_name'][:40]}: {m['subject'][:60]}",
-                       f"{out['summary']}\n\n_{out['reason']} · {account}_", "urgent", url=url)
+                       f"{out['summary']}\n\n_{out['reason']} · {account}_",
+                       "emergency" if out.get("emergency") else "urgent", url=url)
 
 
 # ---------------------------------------------------------------- digests

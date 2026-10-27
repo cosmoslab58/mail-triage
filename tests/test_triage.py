@@ -21,6 +21,23 @@ def test_bulk_detection(env):
     assert triage.describe(b"From: a@b.c\r\nList-Unsubscribe: <mailto:x>\r\n\r\nhi")["bulk"]
 
 
+def test_no_quiet_hours(env, monkeypatch):
+    triage, _, _ = env
+    monkeypatch.setitem(triage.CFG, "quiet_hours", [])
+    assert not triage.in_quiet_hours()
+
+
+def test_an_emergency_goes_out_at_the_top_priority(env, monkeypatch):
+    triage, _, _ = env
+    sent = []
+    monkeypatch.setattr(triage.NOTIFY, "send", lambda title, msg, level, url=None: sent.append(level) or True)
+    m = {"sender_name": "Mom", "subject": "Dad fell", "msgid": "<1@x>"}
+    triage.push_now("a@b.c", m, {"summary": "s", "reason": "r", "emergency": True})
+    triage.push_now("a@b.c", m, {"summary": "s", "reason": "r"})
+    assert sent == ["emergency", "urgent"]
+    assert triage.notifiers.Gotify.PRIORITY["emergency"] == 10
+
+
 def test_quiet_hours_across_midnight(env):
     triage, _, _ = env
     at = lambda h, m: dt.datetime(2026, 1, 1, h, m, tzinfo=triage.TZ)  # noqa: E731

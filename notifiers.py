@@ -12,7 +12,7 @@ import urllib.request
 
 log = logging.getLogger("triage")
 
-LEVELS = ("urgent", "normal", "low")
+LEVELS = ("emergency", "urgent", "normal", "low")   # emergency: the classifier's flag, rings even at night
 
 
 def _post(url, body, headers, form=False):
@@ -47,7 +47,7 @@ class Notifier:
 
 class Gotify(Notifier):
     # Gotify Android buckets priorities into channels: 0 Min, 1-3 Low, 4-7 Normal, 8-10 High.
-    PRIORITY = {"urgent": 8, "normal": 5, "low": 2}
+    PRIORITY = {"emergency": 10, "urgent": 8, "normal": 5, "low": 2}
 
     def _send(self, title, message, level, url):
         extras = {"client::display": {"contentType": "text/markdown"}}
@@ -60,7 +60,7 @@ class Gotify(Notifier):
 
 class Ntfy(Notifier):
     # ntfy priorities: 5 max/urgent, 4 high, 3 default, 2 low, 1 min.
-    PRIORITY = {"urgent": 5, "normal": 3, "low": 2}
+    PRIORITY = {"emergency": 5, "urgent": 5, "normal": 3, "low": 2}
 
     def _send(self, title, message, level, url):
         headers = {}
@@ -73,7 +73,7 @@ class Ntfy(Notifier):
 
 
 class Pushover(Notifier):
-    PRIORITY = {"urgent": 1, "normal": 0, "low": -1}
+    PRIORITY = {"emergency": 1, "urgent": 1, "normal": 0, "low": -1}
 
     def _send(self, title, message, level, url):
         _post("https://api.pushover.net/1/messages.json",
