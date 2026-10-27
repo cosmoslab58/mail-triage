@@ -69,3 +69,7 @@ accounts:
   - {user: alex@example.com, host: imap.fastmail.com, password_env: PW_ALEX_WORK}
   # move: false  -> classify and push only; never move or flag (e.g. a box a CRM also reads)
   - {user: info@example.com, host: imap.fastmail.com, password_env: PW_INFO, move: false}
+
+# Mail from this address carrying an X-Dispatch header was sent by a push service that already
+# decided whether it rings the phone: it is filed to Later and never pushed again. Unset = off.
+# dispatch_sender: service@example.com

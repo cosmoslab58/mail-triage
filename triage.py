@@ -194,6 +194,8 @@ def describe(raw, body_chars=2500):
         "reply_to": parseaddr(str(msg.get("Reply-To", "")))[1].lower(),
         "refs": refs,
         "body": text_of(msg, body_chars),
+        # an alert our own push service (dispatch) already delivered and is now also emailing
+        "dispatched": bool(msg.get("X-Dispatch")),
     }
 
 
@@ -376,7 +378,13 @@ class Account(threading.Thread):
         known = bool(q("SELECT 1 FROM contacts WHERE addr=?", m["sender"]))
         reply_to_me = any(q("SELECT 1 FROM sent_ids WHERE msgid=?", r) for r in m["refs"])
         try:
-            out = classify(self.user, m, known, reply_to_me)
+            if m["dispatched"] and m["sender"] == (CFG.get("dispatch_sender") or "").lower():
+                # Dispatch decided whether this rings the phone already; pushing it again would
+                # ring twice (and its replies could loop). File it, no model call.
+                out = {"tier": "later", "category": "server alert", "summary": m["subject"][:90],
+                       "reason": "sent by dispatch, already handled", "phishing": False, "emergency": False}
+            else:
+                out = classify(self.user, m, known, reply_to_me)
         except Exception as e:
             # Fail open: unclassified mail stays in the inbox and shows up in the digest.
             log.error("classify failed for %s: %s", m["msgid"], e)

@@ -164,3 +164,9 @@ def test_an_emergency_is_always_pushed_and_never_phishing(env):
     out = triage.classify("a@x.com", m, known=False, reply_to_me=False)
     assert out["tier"] == "later" and not out["emergency"]
     assert "emergency" in triage.schema()["required"]
+
+
+def test_mail_from_dispatch_is_filed_not_pushed(env, monkeypatch):
+    triage, _, _ = env
+    m = triage.describe(b"From: service@x.dev\r\nX-Dispatch: 1\r\nSubject: [Proxmox] disk failing\r\n\r\nbody")
+    assert m["dispatched"] and not triage.describe(b"From: a@b.c\r\nSubject: hi\r\n\r\nx")["dispatched"]
