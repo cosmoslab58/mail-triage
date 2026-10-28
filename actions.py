@@ -182,12 +182,32 @@ def sent_folder(c):
         return None
 
 
+SCAN = 3000   # newest messages whose Message-ID is read when the server's own search misses
+
+
+def search_msgid(c, msgid):
+    """UIDs in the selected folder with this Message-ID. The server's HEADER search first; but a
+    server can miss a message in it (Purelymail, 2026-10-27: a Later message it found by date
+    but never by Message-ID, so Mark read did nothing), so on no hit the newest SCAN messages'
+    headers are read and matched exactly."""
+    hits = c.search(["HEADER", "Message-ID", msgid])
+    if hits:
+        return hits
+    uids = c.search(["ALL"])[-SCAN:]
+    found = []
+    for i in range(0, len(uids), 500):
+        for uid, d in c.fetch(uids[i:i + 500], ["BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE MESSAGE-ID)]"]).items():
+            if msgid in triage.ids_in(d.get(HEADERS, b"").decode(errors="replace")):
+                found.append(uid)
+    return found
+
+
 def locate(c, msgid, folders):
     check_msgid(msgid)
     for f in folders:
         if f and c.folder_exists(f):
             c.select_folder(f)
-            uids = c.search(["HEADER", "Message-ID", msgid])
+            uids = search_msgid(c, msgid)
             if uids:
                 return f, uids
     return None, []
@@ -471,7 +491,7 @@ def set_seen(account, msgids, seen, where=None, connect=None):
             c.select_folder(f)
             uids, found = set(), set()
             for msgid in left:
-                hits = c.search(["HEADER", "Message-ID", msgid])
+                hits = search_msgid(c, msgid)
                 if hits:
                     uids.update(hits)
                     found.add(msgid)

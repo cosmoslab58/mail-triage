@@ -277,3 +277,16 @@ def test_important_is_now_today_inbox_mail_without_a_to_do(ax):
     out = actions.important(24, folder_fn=lambda name, days: inbox)
     # b has a to-do, c is later, d was moved to Later, e is phishing, f left the inbox
     assert [(m["msgid"], m["seen"]) for m in out["items"]] == [("<a@1>", True)]
+
+
+class MissingIndex(FakeIMAP):
+    """A server whose HEADER search misses messages (Purelymail did, for one in Later)."""
+
+    def search(self, crit, charset=None):
+        return [] if crit[0] == "HEADER" else super().search(crit, charset)
+
+
+def test_mark_read_finds_a_message_the_server_search_misses(ax):
+    c = MissingIndex({"INBOX": {}, "Later": {5: raw("<w@1>", "Watchtower"), 6: raw("<other@1>")}, "[Gmail]/Spam": {}})
+    out = actions.set_seen("a@x.com", ["<w@1>"], True, where="later", connect=lambda: c)
+    assert out == {"ok": True, "changed": 1} and ("Later", 5) in c.seen and ("Later", 6) not in c.seen
