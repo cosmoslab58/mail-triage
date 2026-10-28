@@ -72,6 +72,7 @@ PER_FOLDER = 100   # newest messages listed per account and folder
 # Logins are kept a few minutes and reused: a fresh login (Gmail most of all) was most of the
 # time a button took. One connection per account, used by one request at a time.
 KEEP_S = 240
+LOCK_WAIT_S = 15   # longer than this behind another request: use a connection of our own
 _pool: dict = {}            # account -> (IMAPClient, when last used)
 _locks: dict = {}
 _locks_guard = threading.Lock()
@@ -102,7 +103,18 @@ def imap(spec, connect=None):
             _close(c)
         return
     user = spec["user"]
-    with _lock(user):
+    lock = _lock(user)
+    if not lock.acquire(timeout=LOCK_WAIT_S):
+        # The kept connection is busy with something slow (2026-10-28: a mark-all-read held one
+        # for minutes and the Mail page waited behind it). Don't queue: a fresh login, not kept.
+        log.warning("%s busy for %ss; this request uses its own connection", user, LOCK_WAIT_S)
+        c = triage.Account(spec).connect()
+        try:
+            yield c
+        finally:
+            _close(c)
+        return
+    try:
         c, hit = None, _pool.pop(user, None)
         if hit and time.monotonic() - hit[1] < KEEP_S:
             try:
@@ -125,6 +137,8 @@ def imap(spec, connect=None):
                 _pool[user] = (c, time.monotonic())
             else:
                 _close(c)
+    finally:
+        lock.release()
 
 
 class ActionError(Exception):
@@ -185,23 +199,32 @@ def sent_folder(c):
 SCAN = 3000   # newest messages whose Message-ID is read when the server's own search misses
 
 
-def search_msgid(c, msgid):
-    """UIDs in the selected folder with this Message-ID. The server's HEADER search first; but a
-    server can miss a message in it (Purelymail, 2026-10-27: a Later message it found by date
-    but never by Message-ID, so Mark read did nothing), so on no hit the newest SCAN messages'
-    headers are read and matched exactly."""
-    hits = c.search(["HEADER", "Message-ID", msgid])
-    if hits:
-        return hits
-    uids = c.search(["ALL"])[-SCAN:]
-    found = []
-    for i in range(0, len(uids), 500):
-        for uid, d in c.fetch(uids[i:i + 500], ["BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE MESSAGE-ID)]"]).items():
-            if msgid in triage.ids_in(d.get(HEADERS, b"").decode(errors="replace")):
-                found.append(uid)
-    if found:   # worth knowing: if this grows, the server's search index is getting worse
-        log.warning("server search missed %s (uid %s); found by reading headers", msgid, found)
+def search_msgids(c, msgids):
+    """{msgid: [uid, ...]} in the selected folder. The server's HEADER search per message first;
+    a server can miss a message in it (Purelymail, 2026-10-27), so those still missing are looked
+    for by reading the newest SCAN messages' headers ONCE for all of them (per message it was
+    minutes for a mark-all-read, and the account's connection was held all that time)."""
+    found = {}
+    for msgid in msgids:
+        hits = c.search(["HEADER", "Message-ID", msgid])
+        if hits:
+            found[msgid] = hits
+    missing = set(msgids) - set(found)
+    if missing:
+        uids = c.search(["ALL"])[-SCAN:]
+        for i in range(0, len(uids), 500):
+            for uid, d in c.fetch(uids[i:i + 500], ["BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE MESSAGE-ID)]"]).items():
+                for mid in triage.ids_in(d.get(HEADERS, b"").decode(errors="replace")):
+                    if mid in missing:
+                        found.setdefault(mid, []).append(uid)
+        late = missing & set(found)
+        if late:   # worth knowing: if this grows, the server's search index is getting worse
+            log.warning("server search missed %d message(s) (%s); found by reading headers", len(late), sorted(late)[:3])
     return found
+
+
+def search_msgid(c, msgid):
+    return search_msgids(c, [msgid]).get(msgid, [])
 
 
 def locate(c, msgid, folders):
@@ -491,12 +514,8 @@ def set_seen(account, msgids, seen, where=None, connect=None):
             if f != "INBOX" and not c.folder_exists(f):
                 continue
             c.select_folder(f)
-            uids, found = set(), set()
-            for msgid in left:
-                hits = search_msgid(c, msgid)
-                if hits:
-                    uids.update(hits)
-                    found.add(msgid)
+            hits = search_msgids(c, left)
+            uids, found = {u for v in hits.values() for u in v}, set(hits)
             if uids:
                 (c.add_flags if seen else c.remove_flags)(sorted(uids), [SEEN])
                 changed += len(uids)

@@ -290,3 +290,30 @@ def test_mark_read_finds_a_message_the_server_search_misses(ax):
     c = MissingIndex({"INBOX": {}, "Later": {5: raw("<w@1>", "Watchtower"), 6: raw("<other@1>")}, "[Gmail]/Spam": {}})
     out = actions.set_seen("a@x.com", ["<w@1>"], True, where="later", connect=lambda: c)
     assert out == {"ok": True, "changed": 1} and ("Later", 5) in c.seen and ("Later", 6) not in c.seen
+
+
+def test_a_busy_account_connection_is_not_waited_on(ax, monkeypatch):
+    """One slow request held an account's kept connection and the Mail page queued behind it."""
+    monkeypatch.setattr(actions, "LOCK_WAIT_S", 0.1)
+    fresh = []
+    monkeypatch.setattr(actions.triage, "Account", lambda spec: type("A", (), {"connect": lambda self: fresh.append(1) or box()})())
+    lock = actions._lock("a@x.com")
+    lock.acquire()
+    try:
+        with actions.imap({"user": "a@x.com"}) as c:
+            assert isinstance(c, FakeIMAP)
+    finally:
+        lock.release()
+    assert fresh == [1] and "a@x.com" not in actions._pool   # its own connection, not kept
+
+
+def test_the_header_fallback_reads_each_folder_once(ax):
+    reads = []
+
+    class Counting(MissingIndex):
+        def fetch(self, uids, parts):
+            reads.append(len(uids))
+            return super().fetch(uids, parts)
+    c = Counting({"INBOX": {}, "Later": {i: raw(f"<m{i}@1>") for i in range(1, 6)}, "[Gmail]/Spam": {}})
+    out = actions.set_seen("a@x.com", [f"<m{i}@1>" for i in range(1, 6)], True, where="later", connect=lambda: c)
+    assert out["changed"] == 5 and reads == [5]   # one pass over Later for all five
