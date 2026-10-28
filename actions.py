@@ -199,6 +199,8 @@ def search_msgid(c, msgid):
         for uid, d in c.fetch(uids[i:i + 500], ["BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE MESSAGE-ID)]"]).items():
             if msgid in triage.ids_in(d.get(HEADERS, b"").decode(errors="replace")):
                 found.append(uid)
+    if found:   # worth knowing: if this grows, the server's search index is getting worse
+        log.warning("server search missed %s (uid %s); found by reading headers", msgid, found)
     return found
 
 
