@@ -210,8 +210,11 @@ def search_msgids(c, msgids):
         if hits:
             found[msgid] = hits
     missing = set(msgids) - set(found)
-    if missing:
-        uids = c.search(["ALL"])[-SCAN:]
+    if missing and not c.has_capability("X-GM-EXT-1"):   # Gmail's search doesn't miss; its All Mail is huge
+        # Only the newest UIDs: SEARCH ALL in a big folder answers past imaplib's 1 MB line
+        # limit ("got more than 1000000 bytes", Gmail All Mail, 2026-10-28).
+        top = max(c.search(["UID", "*"]) or [0])   # "*" is the newest message
+        uids = c.search(["UID", f"{max(1, top - SCAN)}:{top}"])[-SCAN:] if top else []
         for i in range(0, len(uids), 500):
             for uid, d in c.fetch(uids[i:i + 500], ["BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE MESSAGE-ID)]"]).items():
                 for mid in triage.ids_in(d.get(HEADERS, b"").decode(errors="replace")):
@@ -323,7 +326,7 @@ def message(account, msgid, read=False, connect=None):
     check_msgid(msgid)
     spec = spec_for(account)
     with imap(spec, connect) as c:
-        folders = ["INBOX", triage.CFG["later_folder"], all_mail(c), junk_folder(c), sent_folder(c)]
+        folders = ["INBOX", triage.CFG["later_folder"], junk_folder(c), all_mail(c), sent_folder(c)]
         found_in, uids = locate(c, msgid, folders)
         if not uids:
             raise ActionError(410, "no longer in Inbox, Later or Spam (deleted or archived in your mail app)")

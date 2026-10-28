@@ -28,7 +28,16 @@ class FakeIMAP:
         self.sel = f
         self.readonly[f] = readonly
 
+    def has_capability(self, cap):
+        return False
+
     def search(self, crit, charset=None):
+        if crit[0] == "UID":
+            have = sorted(self.folders[self.sel])
+            if crit[1] == "*":
+                return have[-1:]
+            lo, hi = map(int, crit[1].split(":"))
+            return [u for u in have if lo <= u <= hi]
         if crit[0] == "HEADER":
             return [u for u, raw in self.folders[self.sel].items() if crit[2].encode() in raw]
         words = [crit[i + 1] for i, c in enumerate(crit) if c == "TEXT"]
@@ -290,6 +299,25 @@ def test_mark_read_finds_a_message_the_server_search_misses(ax):
     c = MissingIndex({"INBOX": {}, "Later": {5: raw("<w@1>", "Watchtower"), 6: raw("<other@1>")}, "[Gmail]/Spam": {}})
     out = actions.set_seen("a@x.com", ["<w@1>"], True, where="later", connect=lambda: c)
     assert out == {"ok": True, "changed": 1} and ("Later", 5) in c.seen and ("Later", 6) not in c.seen
+
+
+def test_the_fallback_reads_only_the_newest_messages_and_never_searches_all(ax, monkeypatch):
+    """SEARCH ALL in Gmail's All Mail answered past imaplib's 1 MB limit (2026-10-28)."""
+    monkeypatch.setattr(actions, "SCAN", 2)
+    c = MissingIndex({"INBOX": {1: raw("<old@1>"), 7: raw("<x@1>"), 8: raw("<w@1>")}})
+    c.select_folder("INBOX")
+    asked = []
+    real = c.search
+    c.search = lambda crit, charset=None: asked.append(crit) or real(crit, charset)
+    assert actions.search_msgids(c, ["<w@1>", "<old@1>"]) == {"<w@1>": [8]}
+    assert ["ALL"] not in asked
+
+
+def test_gmail_trusts_its_own_search(ax):
+    c = MissingIndex({"INBOX": {8: raw("<w@1>")}})
+    c.has_capability = lambda cap: cap == "X-GM-EXT-1"
+    c.select_folder("INBOX")
+    assert actions.search_msgids(c, ["<w@1>"]) == {}
 
 
 def test_a_busy_account_connection_is_not_waited_on(ax, monkeypatch):
