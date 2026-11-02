@@ -363,3 +363,23 @@ def test_address_book_emails_count_as_known(sec, monkeypatch):
     dav.store.clear()   # a missing book raises, so the refresh logs it and keeps the Sent addresses
     with pytest.raises(RuntimeError):
         secretary.contact_emails()
+
+
+def test_ticking_off_marks_filed_list_mail_read_too(sec):
+    triage, llm, _, dav = sec
+    triage.CFG["list_folders"] = {"club.org": "Club"}
+    classify_and_record(triage, llm, "today", todo="Pay the invoice")
+    secretary.push()
+    dav.store.clear()
+    secretary.poll()
+
+    class C:
+        def __init__(self): self.selected, self.flagged = "INBOX", []
+        def folder_exists(self, f): return True
+        def select_folder(self, f, readonly=False): self.selected = f
+        def search(self, crit): return [7] if self.selected == "Club" else []
+        def add_flags(self, uids, flags): self.flagged.append((self.selected, uids))
+    c = C()
+    secretary.mark_read("a@x.com", True, c)
+    assert c.flagged == [("Club", [7])] and c.selected == "INBOX"
+    triage.CFG["list_folders"] = {}

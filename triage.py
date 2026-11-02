@@ -52,6 +52,7 @@ DEFAULTS = {
     "body_chars": 2500,
     "profile": "profile.md",
     "corrections_in_prompt": 30,
+    "list_folders": {},   # List-ID domain -> folder: group/list mail is filed there instead of Later
 }
 
 log = logging.getLogger("triage")
@@ -196,7 +197,25 @@ def describe(raw, body_chars=2500):
         "body": text_of(msg, body_chars),
         # an alert our own push service (dispatch) already delivered and is now also emailing
         "dispatched": bool(msg.get("X-Dispatch")),
+        # "<treasurer.drscca.org>" -> "treasurer.drscca.org"; picks a list_folders entry
+        "list_id": (re.findall(r"<([^<>\s]+)>", str(msg.get("List-Id", ""))) or [""])[0].lower(),
     }
+
+
+def list_folder(m):
+    """The folder this list mail is filed in (config list_folders, by List-ID domain), else None.
+    'drscca.org' matches the List-ID drscca.org and any list under it, e.g. treasurer.drscca.org."""
+    lid = m.get("list_id") or ""
+    for domain, folder in (CFG.get("list_folders") or {}).items():
+        d = domain.lower().strip(".")
+        if lid == d or lid.endswith("." + d):
+            return folder
+    return None
+
+
+def extra_folders():
+    """Folders besides INBOX and Later where the sorter files mail (one per list_folders entry)."""
+    return sorted(set((CFG.get("list_folders") or {}).values()))
 
 
 # ---------------------------------------------------------------- classify
@@ -315,11 +334,12 @@ class Account(threading.Thread):
         return c
 
     # -- Later folder + contacts --------------------------------------------
-    def ensure_later(self, c):
-        if not c.folder_exists(self.later):
-            c.create_folder(self.later)
-            c.subscribe_folder(self.later)   # unsubscribed folders are invisible in most clients
-            log.info("created and subscribed folder %s", self.later)
+    def ensure_later(self, c, folder=None):
+        folder = folder or self.later
+        if not c.folder_exists(folder):
+            c.create_folder(folder)
+            c.subscribe_folder(folder)   # unsubscribed folders are invisible in most clients
+            log.info("created and subscribed folder %s", folder)
 
     def refresh_contacts(self, c):
         addrs, ids = set(), set()
@@ -393,8 +413,12 @@ class Account(threading.Thread):
         tier = out["tier"]
         applied = 0
         if not CFG["shadow"] and self.move:
-            if tier == "later":
-                c.move([uid], self.later)
+            dest = list_folder(m)
+            if tier == "later" or (tier == "today" and dest):
+                # list mail goes to its own folder; "now" stays in INBOX, flagged, whatever the list
+                if dest:
+                    self.ensure_later(c, dest)   # made on first use, not in every account
+                c.move([uid], dest or self.later)
                 applied = 1
             elif tier == "now":
                 c.add_flags([uid], [b"\\Flagged"])
@@ -430,6 +454,7 @@ class Account(threading.Thread):
 
     def scan_corrections(self, c):
         inbox, later = self.ids_since(c, "INBOX"), self.ids_since(c, self.later)
+        filed = set().union(*(self.ids_since(c, f) for f in extra_folders()))
         cutoff = (now() - dt.timedelta(days=21)).isoformat()
         for msgid, tier, applied in q("""SELECT msgid, tier, applied FROM messages WHERE account=?
                                          AND corrected IS NULL AND ts > ?""", self.user, cutoff):
@@ -441,7 +466,7 @@ class Account(threading.Thread):
                 continue
             q("UPDATE messages SET corrected=? WHERE account=? AND msgid=?", fix, self.user, msgid)
             log.info("correction learned: %s %s -> %s", msgid, tier, fix)
-        self.mark_gone(inbox | later, cutoff)
+        self.mark_gone(inbox | later | filed, cutoff)   # filed list mail is not gone
         self.last_corrections = time.time()
 
     def mark_gone(self, present, cutoff):

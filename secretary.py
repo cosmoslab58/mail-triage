@@ -527,12 +527,23 @@ def mark_read(account, move, c):
     """INBOX selected: \\Seen for every email of the to-dos you finished."""
     if not enabled():
         return
-    for row in rows("account=? AND state='done'", account):
-        if move:
-            for msgid in set((row["msgids"] or row["msgid"]).split()):
-                found = c.search(["HEADER", "Message-ID", msgid])
-                if found:
-                    c.add_flags(found, [b"\\Seen"])
+    done = rows("account=? AND state='done'", account)
+    if move and done:
+        switched = False
+        for folder in ["INBOX", *triage.extra_folders()]:   # list mail is filed in its own folder
+            if folder != "INBOX":
+                if not c.folder_exists(folder):
+                    continue
+                c.select_folder(folder)
+                switched = True
+            for row in done:
+                for msgid in set((row["msgids"] or row["msgid"]).split()):
+                    found = c.search(["HEADER", "Message-ID", msgid])
+                    if found:
+                        c.add_flags(found, [b"\\Seen"])
+        if switched:
+            c.select_folder("INBOX")
+    for row in done:
         set_state(row["uid"], "seen")
 
 

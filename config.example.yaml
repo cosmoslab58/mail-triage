@@ -50,6 +50,11 @@ digest_level: normal               # its push level: normal (a sound) or low (si
                                    # something else rolls it into a summary of its own)
 weekly_day: sun                    # weekly "later" roll-up, sent at digest_time
 later_folder: Later
+# Mail from a mailing list or group (by its List-ID domain) is filed in its own folder instead of
+# Later; "today" mail goes there too. "now" mail stays in INBOX, flagged. A domain matches every list
+# under it ("example.org" matches treasurer.example.org).
+# list_folders:
+#   example.org: Club
 # Optional HTTP API for a dashboard: move mail between Inbox/Later/Spam, list spam (actions.py).
 # actions:
 #   listen: 0.0.0.0:8941             # inside the container; publish as 127.0.0.1:8941:8941

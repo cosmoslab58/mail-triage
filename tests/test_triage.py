@@ -170,3 +170,64 @@ def test_mail_from_dispatch_is_filed_not_pushed(env, monkeypatch):
     triage, _, _ = env
     m = triage.describe(b"From: service@x.dev\r\nX-Dispatch: 1\r\nSubject: [Proxmox] disk failing\r\n\r\nbody")
     assert m["dispatched"] and not triage.describe(b"From: a@b.c\r\nSubject: hi\r\n\r\nx")["dispatched"]
+
+
+LIST_MAIL = (b"From: billing@vendor.com\r\nTo: treasurer@club.org\r\nList-Id: <treasurer.club.org>\r\n"
+             b"Message-ID: <inv1@vendor.com>\r\nSubject: Your invoice\r\n\r\nInvoice attached.")
+
+
+class FolderIMAP:
+    def __init__(self):
+        self.moves, self.flags, self.made = [], [], []
+    def folder_exists(self, f): return f in self.made
+    def create_folder(self, f): self.made.append(f)
+    def subscribe_folder(self, f): pass
+    def move(self, uids, dest): self.moves.append((uids, dest))
+    def add_flags(self, uids, flags): self.flags.append((uids, flags))
+
+
+def test_list_mail_is_matched_by_list_id_domain(env):
+    triage = env[0]
+    triage.CFG["list_folders"] = {"club.org": "Club"}
+    assert triage.describe(LIST_MAIL)["list_id"] == "treasurer.club.org"
+    assert triage.list_folder(triage.describe(LIST_MAIL)) == "Club"
+    assert triage.list_folder({"list_id": "club.org"}) == "Club"
+    assert triage.list_folder({"list_id": "notclub.org"}) is None
+    assert triage.list_folder({"list_id": ""}) is None
+    assert triage.extra_folders() == ["Club"]
+
+
+def test_list_mail_is_filed_in_its_folder_but_now_stays_in_inbox(env):
+    triage, llm, notify = env
+    triage.CFG["list_folders"] = {"club.org": "Club"}
+    a = triage.Account({"user": "a@x.com", "host": "h", "password_env": "P"})
+    for tier, uid in (("later", 1), ("today", 2), ("now", 3)):
+        llm.reply.update(tier=tier)
+        c = FolderIMAP()
+        a.handle(c, uid, LIST_MAIL.replace(b"<inv1@", f"<inv{uid}@".encode()))
+        if tier == "now":
+            assert c.moves == [] and c.flags == [([3], [b"\\Flagged"])] and notify.sent
+        else:
+            assert c.moves == [([uid], "Club")]
+    llm.reply.update(tier="today")
+    c = FolderIMAP()
+    a.handle(c, 9, RAW)   # ordinary mail: today stays in INBOX
+    assert c.moves == []
+
+
+def test_filed_list_mail_is_not_gone(env):
+    triage = env[0]
+    triage.CFG["list_folders"] = {"club.org": "Club"}
+    triage.q("INSERT INTO messages (account,msgid,ts,sender,subject,tier,applied) VALUES (?,?,?,?,?,?,1)",
+             "a@x.com", "<inv1@vendor.com>", triage.now().isoformat(), "s@x", "s", "today")
+
+    class C:
+        def folder_exists(self, f): return True
+        def select_folder(self, f, readonly=False): self.f = f
+        def search(self, crit): return [1]
+        def fetch(self, uids, parts):
+            ids = {"Club": "<inv1@vendor.com>"}.get(self.f, "<other@x>")
+            return {1: {b"BODY[HEADER.FIELDS (MESSAGE-ID)]": f"Message-ID: {ids}\r\n".encode()}}
+    a = triage.Account({"user": "a@x.com", "host": "h", "password_env": "P"})
+    a.scan_corrections(C())
+    assert triage.q("SELECT gone_at, corrected FROM messages")[0] == (None, None)

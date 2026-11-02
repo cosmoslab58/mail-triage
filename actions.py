@@ -277,7 +277,8 @@ def move(account, msgid, dest, connect=None):
         target = folder_for(c, dest)
         if not target:
             raise ActionError(409, f"{account} has no spam folder")
-        others = [f for f in ("INBOX", triage.CFG["later_folder"], junk_folder(c)) if f and f != target]
+        others = [f for f in ("INBOX", triage.CFG["later_folder"], *triage.extra_folders(), junk_folder(c))
+                  if f and f != target and (f == "INBOX" or c.folder_exists(f))]
         found_in, uids = locate(c, msgid, others)
         if not uids:
             if locate(c, msgid, [target])[1]:
@@ -326,7 +327,7 @@ def message(account, msgid, read=False, connect=None):
     check_msgid(msgid)
     spec = spec_for(account)
     with imap(spec, connect) as c:
-        folders = ["INBOX", triage.CFG["later_folder"], junk_folder(c), all_mail(c), sent_folder(c)]
+        folders = ["INBOX", triage.CFG["later_folder"], *triage.extra_folders(), junk_folder(c), all_mail(c), sent_folder(c)]
         found_in, uids = locate(c, msgid, folders)
         if not uids:
             raise ActionError(410, "no longer in Inbox, Later or Spam (deleted or archived in your mail app)")
@@ -445,7 +446,7 @@ def search(spec, words, since, before=None, oldest=False, connect=None):
     with imap(spec, connect) as c:
         folders = [all_mail(c)]
         if not folders[0]:
-            folders = ["INBOX", triage.CFG["later_folder"], sent_folder(c)]
+            folders = ["INBOX", triage.CFG["later_folder"], *triage.extra_folders(), sent_folder(c)]
         for f in folders:
             if not f or not c.folder_exists(f):
                 continue
@@ -504,7 +505,7 @@ def set_seen(account, msgids, seen, where=None, connect=None):
         def folders():
             if where in DESTS:
                 yield folder_for(c, where)
-            yield from ("INBOX", triage.CFG["later_folder"])
+            yield from ("INBOX", triage.CFG["later_folder"], *triage.extra_folders())
             yield junk_folder(c)
             yield all_mail(c)
         changed, tried = 0, set()
