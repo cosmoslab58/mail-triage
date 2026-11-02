@@ -52,6 +52,7 @@ DEFAULTS = {
     "body_chars": 2500,
     "profile": "profile.md",
     "corrections_in_prompt": 30,
+    "move_after": 15,   # seconds after a message is seen before it is moved (Purelymail moves too soon can fail)
     "folders": {},   # topic folders: {name: {domains: [...], subject: [...]}}; matching mail is filed there, not Later
 }
 
@@ -224,6 +225,92 @@ def topic_folder(m):
     return None
 
 
+SCAN = 3000   # newest messages whose Message-ID is read when the server's own search misses
+_MSGID = "BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)]"
+
+
+def _header(d):
+    return next((v for k, v in (d or {}).items() if k.startswith(b"BODY[")), b"").decode(errors="replace")
+
+
+def find_msgids(c, msgids, scan=None):
+    """{msgid: [uid, ...]} in the selected folder, checked against the messages themselves.
+
+    Purelymail's search index lags a move by up to a minute (2026-10-27, 2026-11-02): it can miss
+    a message that is there, or return one that has already moved away (369 hits for 1 message).
+    So every hit is confirmed by reading its Message-ID, which drops the ghosts, and messages
+    still missing are looked for by reading the newest `scan` headers ONCE for all of them."""
+    scan = scan or SCAN
+    wanted = list(dict.fromkeys(msgids))
+    hits = {}
+    for msgid in wanted:
+        uids = c.search(["HEADER", "Message-ID", msgid])
+        if uids:
+            hits[msgid] = uids
+    found = {}
+    every = sorted({u for v in hits.values() for u in v})
+    if every:
+        heads = c.fetch(every, [_MSGID])
+        for msgid, uids in hits.items():
+            real = [u for u in uids if msgid in ids_in(_header(heads.get(u)))]
+            if real:
+                found[msgid] = real
+    ghosts = sum(map(len, hits.values())) - sum(map(len, found.values()))
+    if ghosts:
+        log.warning("server search returned %d message(s) no longer in this folder; ignored", ghosts)
+    missing = set(wanted) - set(found)
+    if missing and not c.has_capability("X-GM-EXT-1"):   # Gmail's search doesn't miss; its All Mail is huge
+        # Only the newest UIDs: SEARCH ALL in a big folder answers past imaplib's 1 MB line
+        # limit ("got more than 1000000 bytes", Gmail All Mail, 2026-10-28).
+        top = max(c.search(["UID", "*"]) or [0])   # "*" is the newest message
+        uids = c.search(["UID", f"{max(1, top - scan)}:{top}"])[-scan:] if top else []
+        for i in range(0, len(uids), 500):
+            for uid, d in c.fetch(uids[i:i + 500], [_MSGID]).items():
+                for mid in ids_in(_header(d)):
+                    if mid in missing:
+                        found.setdefault(mid, []).append(uid)
+        late = missing & set(found)
+        if late:   # worth knowing: if this grows, the server's search index is getting worse
+            log.warning("server search missed %d message(s) (%s); found by reading headers", len(late), sorted(late)[:3])
+    return found
+
+
+_move_alerted = {}   # who -> time of the last "move failed" alert (one an hour per account)
+
+
+def move_checked(c, uids, dest, who="", msgid=None):
+    """MOVE out of the selected folder, then confirm it by UID FETCH (exact, unlike SEARCH, which
+    lags). Purelymail has answered OK to a MOVE that moved nothing (2 of 50 in a burst,
+    2026-11-02). A UID counts as not moved only if it still holds this message (its Message-ID,
+    when given), so a retry can never move some other message. One retry; if a message is still
+    there, alert (at most hourly per account) and return its UIDs."""
+    def still_here(us):
+        got = c.fetch(us, [_MSGID])
+        return sorted(u for u, d in got.items() if msgid is None or msgid in ids_in(_header(d)))
+
+    c.move(uids, dest)
+    left = still_here(uids)
+    if not left:
+        return []
+    log.warning("%s: MOVE to %s answered OK but uid(s) %s did not move; retrying", who, dest, left)
+    time.sleep(2)
+    try:
+        c.move(left, dest)
+    except Exception as e:   # e.g. NO because it did move after all: judge by what is there
+        log.warning("%s: retry MOVE answered %s: %s", who, type(e).__name__, e)
+    left = still_here(left)
+    if not left:
+        log.info("%s: retry moved them", who)
+        return []
+    log.error("%s: uid(s) %s still not moved to %s after a retry", who, left, dest)
+    if time.time() - _move_alerted.get(who, 0) > 3600:
+        _move_alerted[who] = time.time()
+        OPS.send("mail-triage: move failed",
+                 f"{who}: the server answered OK but {len(left)} message(s) stayed put instead of moving "
+                 f"to {dest}. Further failures for this account are only logged for an hour.")
+    return left
+
+
 def extra_folders():
     """Folders besides INBOX and Later where the sorter files mail (the topic folders)."""
     return sorted(CFG.get("folders") or {})
@@ -338,6 +425,7 @@ class Account(threading.Thread):
         self.last_corrections = 0
         self.last_contacts = 0
         self.last_replies = 0
+        self.seen_at = 0.0   # when process_new last found new mail (move_after counts from here)
 
     def connect(self):
         c = IMAPClient(self.host, port=self.port, ssl=True, timeout=90)
@@ -386,6 +474,7 @@ class Account(threading.Thread):
             return
         last = cur[0][1]
         uids = [u for u in c.search(["UID", f"{last + 1}:*"]) if u > last]
+        self.seen_at = time.time()
         for uid in sorted(uids):
             raw = c.fetch([uid], ["BODY.PEEK[]<0.300000>"]).get(uid, {})
             raw = raw.get(b"BODY[]<0>") or next((v for k, v in raw.items() if k.startswith(b"BODY[")), b"")
@@ -429,8 +518,12 @@ class Account(threading.Thread):
                 # topic mail goes to its own folder; "now" stays in INBOX, flagged, whatever the topic
                 if dest:
                     self.ensure_later(c, dest)   # made on first use, not in every account
-                c.move([uid], dest or self.later)
-                applied = 1
+                # a move within seconds of delivery is when Purelymail has lost the move or the
+                # search entry; let delivery settle (one wait covers a whole burst)
+                wait = CFG["move_after"] - (time.time() - self.seen_at)
+                if wait > 0:
+                    time.sleep(wait)
+                applied = 0 if move_checked(c, [uid], dest or self.later, self.user, m["msgid"]) else 1
             elif tier == "now":
                 c.add_flags([uid], [b"\\Flagged"])
                 applied = 1

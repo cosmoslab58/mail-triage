@@ -46,7 +46,8 @@ class FakeIMAP:
     def fetch(self, uids, parts):
         return {u: {HDR: self.folders[self.sel][u], actions.HEADERS_TO: self.folders[self.sel][u],
                     b"BODY[]": self.folders[self.sel][u],
-                    b"FLAGS": (actions.SEEN,) if (self.sel, u) in self.seen else ()} for u in uids}
+                    b"FLAGS": (actions.SEEN,) if (self.sel, u) in self.seen else ()}
+                for u in uids if u in self.folders[self.sel]}   # a moved-away UID: nothing, like a server
 
     def add_flags(self, uids, flags):
         assert not self.readonly[self.sel]
@@ -303,7 +304,7 @@ def test_mark_read_finds_a_message_the_server_search_misses(ax):
 
 def test_the_fallback_reads_only_the_newest_messages_and_never_searches_all(ax, monkeypatch):
     """SEARCH ALL in Gmail's All Mail answered past imaplib's 1 MB limit (2026-10-28)."""
-    monkeypatch.setattr(actions, "SCAN", 2)
+    monkeypatch.setattr(actions.triage, "SCAN", 2)
     c = MissingIndex({"INBOX": {1: raw("<old@1>"), 7: raw("<x@1>"), 8: raw("<w@1>")}})
     c.select_folder("INBOX")
     asked = []
@@ -345,3 +346,69 @@ def test_the_header_fallback_reads_each_folder_once(ax):
     c = Counting({"INBOX": {}, "Later": {i: raw(f"<m{i}@1>") for i in range(1, 6)}, "[Gmail]/Spam": {}})
     out = actions.set_seen("a@x.com", [f"<m{i}@1>" for i in range(1, 6)], True, where="later", connect=lambda: c)
     assert out["changed"] == 5 and reads == [5]   # one pass over Later for all five
+
+
+def test_a_ghost_search_hit_is_ignored(ax):
+    """Purelymail's search lags a move: it can still return a UID that has left the folder, or
+    one now holding another message. Only a hit whose own Message-ID matches counts."""
+    c = FakeIMAP({"INBOX": {1: raw("<other@x>")}, "Later": {}})
+    c.select_folder("INBOX")
+    c.search = lambda crit, charset=None: [1, 7] if crit[0] == "HEADER" else [1]
+    assert actions.search_msgids(c, ["<gone@x>"]) == {}
+
+
+def test_a_move_the_server_ignores_is_retried_then_reported(ax, monkeypatch):
+    monkeypatch.setattr(actions.triage.time, "sleep", lambda s: None)
+    sent = []
+    monkeypatch.setattr(actions.triage, "OPS", type("O", (), {"send": lambda self, t, m: sent.append(t)})())
+    c = FakeIMAP({"INBOX": {1: raw("<a@x>")}, "Later": {}})
+    c.select_folder("INBOX")
+    real, calls = c.move, []
+    c.move = lambda uids, dest: calls.append(list(uids)) or (real(uids, dest) if len(calls) == 2 else None)
+    assert actions.triage.move_checked(c, [1], "Later", "a@x.com") == [] and calls == [[1], [1]] and not sent
+    c.folders["INBOX"][2] = raw("<b@x>")
+    c.move = lambda uids, dest: None   # never moves
+    assert actions.triage.move_checked(c, [2], "Later", "a@x.com", "<b@x>") == [2] and sent == ["mail-triage: move failed"]
+    c.folders["INBOX"][3] = raw("<c@x>")
+    assert actions.triage.move_checked(c, [3], "Later", "a@x.com", "<c@x>") == [3]
+    assert sent == ["mail-triage: move failed"]   # one alert an hour per account
+
+
+def test_a_reused_uid_is_never_moved_again(ax, monkeypatch):
+    monkeypatch.setattr(actions.triage.time, "sleep", lambda s: None)
+    c = FakeIMAP({"INBOX": {1: raw("<a@x>")}, "Later": {}})
+    c.select_folder("INBOX")
+    moves = []
+    def move(uids, dest):   # moves it, but the UID now holds another message
+        moves.append(list(uids))
+        c.folders["INBOX"][1] = raw("<someone-else@x>")
+    c.move = move
+    assert actions.triage.move_checked(c, [1], "Later", "a@x.com", "<a@x>") == [] and moves == [[1]]
+
+
+def test_a_retry_that_errors_is_judged_by_what_is_there(ax, monkeypatch):
+    monkeypatch.setattr(actions.triage.time, "sleep", lambda s: None)
+    c = FakeIMAP({"INBOX": {1: raw("<a@x>")}, "Later": {}})
+    c.select_folder("INBOX")
+    calls = []
+    def move(uids, dest):
+        calls.append(1)
+        if len(calls) == 2:
+            c.folders["INBOX"].pop(1)
+            raise RuntimeError("NO no such message")
+    c.move = move
+    assert actions.triage.move_checked(c, [1], "Later", "a@x.com", "<a@x>") == []
+
+
+def test_a_failed_manual_move_leaves_no_correction(ax, monkeypatch):
+    monkeypatch.setattr(actions.triage.time, "sleep", lambda s: None)
+    monkeypatch.setattr(actions.triage, "OPS", type("O", (), {"send": lambda self, t, m: None})())
+    triage = actions.triage
+    triage.q("INSERT INTO messages (account,msgid,ts,sender,subject,tier) VALUES (?,?,?,?,?,?)",
+             "a@x.com", "<a@x>", triage.now().isoformat(), "s@x", "s", "today")
+    c = FakeIMAP({"INBOX": {1: raw("<a@x>")}, "Later": {}})
+    c.move = lambda uids, dest: None
+    with pytest.raises(actions.ActionError) as e:
+        actions.move("a@x.com", "<a@x>", "later", connect=lambda: c)
+    assert e.value.status == 502
+    assert triage.q("SELECT corrected FROM messages WHERE msgid='<a@x>'") == [(None,)]

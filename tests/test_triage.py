@@ -183,6 +183,7 @@ class FolderIMAP:
     def create_folder(self, f): self.made.append(f)
     def subscribe_folder(self, f): pass
     def move(self, uids, dest): self.moves.append((uids, dest))
+    def fetch(self, uids, parts): return {}   # moved: gone from INBOX
     def add_flags(self, uids, flags): self.flags.append((uids, flags))
 
 
@@ -240,3 +241,18 @@ def test_filed_list_mail_is_not_gone(env):
     a = triage.Account({"user": "a@x.com", "host": "h", "password_env": "P"})
     a.scan_corrections(C())
     assert triage.q("SELECT gone_at, corrected FROM messages")[0] == (None, None)
+
+
+def test_a_move_waits_until_delivery_has_settled(env, monkeypatch):
+    triage, llm, _ = env
+    llm.reply.update(tier="later")
+    slept = []
+    monkeypatch.setattr(triage.time, "sleep", slept.append)
+    a = triage.Account({"user": "a@x.com", "host": "h", "password_env": "P"})
+    a.seen_at = triage.time.time()   # just seen
+    c = FolderIMAP()
+    a.handle(c, 1, RAW)
+    assert c.moves == [([1], "Later")] and slept and 10 < slept[0] <= 15
+    a.seen_at, slept[:] = triage.time.time() - 60, []
+    a.handle(c, 2, RAW.replace(b"Subject:", b"Message-ID: <two@x>\r\nSubject:"))
+    assert slept == []

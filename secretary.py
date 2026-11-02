@@ -536,11 +536,10 @@ def mark_read(account, move, c):
                     continue
                 c.select_folder(folder)
                 switched = True
-            for row in done:
-                for msgid in set((row["msgids"] or row["msgid"]).split()):
-                    found = c.search(["HEADER", "Message-ID", msgid])
-                    if found:
-                        c.add_flags(found, [b"\\Seen"])
+            msgids = {mid for row in done for mid in (row["msgids"] or row["msgid"]).split()}
+            found = sorted({u for v in triage.find_msgids(c, msgids).values() for u in v})
+            if found:
+                c.add_flags(found, [b"\\Seen"])
         if switched:
             c.select_folder("INBOX")
     for row in done:

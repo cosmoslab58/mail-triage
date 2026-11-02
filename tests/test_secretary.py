@@ -117,7 +117,11 @@ def test_ticking_off_in_the_app_marks_the_mail_read(sec):
 
     class C:
         flagged = []
-        def search(self, crit): return [42]
+        def search(self, crit):
+            self.mid = crit[-1]
+            return [42]
+        def fetch(self, uids, parts): return {42: {b"BODY[HEADER.FIELDS (MESSAGE-ID)]": f"Message-ID: {self.mid}".encode()}}
+        def has_capability(self, cap): return False
         def add_flags(self, uids, flags): self.flagged.append((uids, flags))
     c = C()
     secretary.mark_read("a@x.com", True, c)
@@ -186,8 +190,16 @@ class Imap:
         self.sent_refs, self.flagged, self.selected = list(sent_refs), [], None
     def find_special_folder(self, f): return "Sent"
     def select_folder(self, f, readonly=False): self.selected = f
-    def search(self, crit): return [1] if crit[0] == "SINCE" else [hash(crit[-1]) % 1000]
+    def search(self, crit):
+        if crit[0] == "SINCE":
+            return [1]
+        uid = hash(crit[-1]) % 1000 + 2
+        self.ids = {**getattr(self, "ids", {}), uid: crit[-1]}
+        return [uid]
+    def has_capability(self, cap): return False
     def fetch(self, uids, parts):
+        if "MESSAGE-ID" in parts[0]:
+            return {u: {b"BODY[HEADER.FIELDS (MESSAGE-ID)]": f"Message-ID: {self.ids[u]}".encode()} for u in uids}
         hdr = "".join(f"In-Reply-To: {r}\r\n" for r in self.sent_refs).encode()
         return {1: {b"BODY[HEADER.FIELDS (IN-REPLY-TO REFERENCES)]": hdr}}
     def add_flags(self, uids, flags): self.flagged += uids
@@ -377,7 +389,11 @@ def test_ticking_off_marks_filed_list_mail_read_too(sec):
         def __init__(self): self.selected, self.flagged = "INBOX", []
         def folder_exists(self, f): return True
         def select_folder(self, f, readonly=False): self.selected = f
-        def search(self, crit): return [7] if self.selected == "Club" else []
+        def search(self, crit):
+            self.mid = crit[-1]
+            return [7] if self.selected == "Club" else []
+        def fetch(self, uids, parts): return {7: {b"BODY[HEADER.FIELDS (MESSAGE-ID)]": f"Message-ID: {self.mid}".encode()}}
+        def has_capability(self, cap): return True   # Gmail-like: no header fallback scan
         def add_flags(self, uids, flags): self.flagged.append((self.selected, uids))
     c = C()
     secretary.mark_read("a@x.com", True, c)

@@ -196,34 +196,10 @@ def sent_folder(c):
         return None
 
 
-SCAN = 3000   # newest messages whose Message-ID is read when the server's own search misses
-
-
 def search_msgids(c, msgids):
-    """{msgid: [uid, ...]} in the selected folder. The server's HEADER search per message first;
-    a server can miss a message in it (Purelymail, 2026-10-27), so those still missing are looked
-    for by reading the newest SCAN messages' headers ONCE for all of them (per message it was
-    minutes for a mark-all-read, and the account's connection was held all that time)."""
-    found = {}
-    for msgid in msgids:
-        hits = c.search(["HEADER", "Message-ID", msgid])
-        if hits:
-            found[msgid] = hits
-    missing = set(msgids) - set(found)
-    if missing and not c.has_capability("X-GM-EXT-1"):   # Gmail's search doesn't miss; its All Mail is huge
-        # Only the newest UIDs: SEARCH ALL in a big folder answers past imaplib's 1 MB line
-        # limit ("got more than 1000000 bytes", Gmail All Mail, 2026-10-28).
-        top = max(c.search(["UID", "*"]) or [0])   # "*" is the newest message
-        uids = c.search(["UID", f"{max(1, top - SCAN)}:{top}"])[-SCAN:] if top else []
-        for i in range(0, len(uids), 500):
-            for uid, d in c.fetch(uids[i:i + 500], ["BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE MESSAGE-ID)]"]).items():
-                for mid in triage.ids_in(d.get(HEADERS, b"").decode(errors="replace")):
-                    if mid in missing:
-                        found.setdefault(mid, []).append(uid)
-        late = missing & set(found)
-        if late:   # worth knowing: if this grows, the server's search index is getting worse
-            log.warning("server search missed %d message(s) (%s); found by reading headers", len(late), sorted(late)[:3])
-    return found
+    """{msgid: [uid, ...]} in the selected folder: triage.find_msgids, which confirms each hit and
+    reads headers when the server's search misses."""
+    return triage.find_msgids(c, msgids)
 
 
 def search_msgid(c, msgid):
@@ -286,9 +262,16 @@ def move(account, msgid, dest, connect=None):
             triage.q("UPDATE messages SET gone_at=? WHERE account=? AND msgid=?",
                      triage.now().isoformat(), account, msgid)
             raise ActionError(410, "no longer in Inbox, Later or Spam (deleted or archived in your mail app)")
+        before = triage.q("SELECT corrected FROM messages WHERE account=? AND msgid=?", account, msgid)
         record(account, msgid, dest, found_in, c, uids[0])
         c.select_folder(found_in)
-        c.move(uids, target)
+        if triage.move_checked(c, uids, target, account, msgid):
+            # it did not move, so it is not a correction: put the row back as it was
+            if before:
+                triage.q("UPDATE messages SET corrected=? WHERE account=? AND msgid=?", before[0][0], account, msgid)
+            else:
+                triage.q("DELETE FROM messages WHERE account=? AND msgid=?", account, msgid)
+            raise ActionError(502, "the mail server said it moved it but did not; try again")
         log.info("moved %s %s: %s -> %s", account, msgid, found_in, target)
         return {"ok": True, "moved_from": found_in, "moved_to": target}
 
