@@ -367,7 +367,7 @@ def test_address_book_emails_count_as_known(sec, monkeypatch):
 
 def test_ticking_off_marks_filed_list_mail_read_too(sec):
     triage, llm, _, dav = sec
-    triage.CFG["list_folders"] = {"club.org": "Club"}
+    triage.CFG["folders"] = {"Club": {"domains": ["club.org"]}}
     classify_and_record(triage, llm, "today", todo="Pay the invoice")
     secretary.push()
     dav.store.clear()
@@ -382,4 +382,4 @@ def test_ticking_off_marks_filed_list_mail_read_too(sec):
     c = C()
     secretary.mark_read("a@x.com", True, c)
     assert c.flagged == [("Club", [7])] and c.selected == "INBOX"
-    triage.CFG["list_folders"] = {}
+    triage.CFG["folders"] = {}

@@ -186,20 +186,29 @@ class FolderIMAP:
     def add_flags(self, uids, flags): self.flags.append((uids, flags))
 
 
-def test_list_mail_is_matched_by_list_id_domain(env):
+CLUB = {"Club": {"domains": ["club.org"], "subject": ["CLUB"]}}
+
+
+def test_topic_mail_is_matched_by_list_id_address_or_subject(env):
     triage = env[0]
-    triage.CFG["list_folders"] = {"club.org": "Club"}
-    assert triage.describe(LIST_MAIL)["list_id"] == "treasurer.club.org"
-    assert triage.list_folder(triage.describe(LIST_MAIL)) == "Club"
-    assert triage.list_folder({"list_id": "club.org"}) == "Club"
-    assert triage.list_folder({"list_id": "notclub.org"}) is None
-    assert triage.list_folder({"list_id": ""}) is None
+    triage.CFG["folders"] = CLUB
+    m = triage.describe(LIST_MAIL)
+    assert m["list_id"] == "treasurer.club.org" and "club.org" in m["addr_domains"]
+    assert triage.topic_folder(m) == "Club"
+    assert triage.topic_folder({"list_id": "club.org"}) == "Club"
+    assert triage.topic_folder({"addr_domains": ["gmail.com", "mail.club.org"]}) == "Club"
+    board = triage.describe(b"From: Piotr <p@gmail.com>\r\nTo: me@gmail.com\r\nCc: Bob <b@yahoo.com>\r\n"
+                            b"Subject: Re: [CLUB] Vote requested\r\n\r\nyes")
+    assert triage.topic_folder(board) == "Club"
+    assert triage.topic_folder({"subject": "Clubhouse news", "addr_domains": ["notclub.org"]}) is None
+    assert triage.topic_folder({"list_id": "", "addr_domains": [], "subject": ""}) is None
+    assert triage.topic_folder(triage.describe(RAW)) is None
     assert triage.extra_folders() == ["Club"]
 
 
 def test_list_mail_is_filed_in_its_folder_but_now_stays_in_inbox(env):
     triage, llm, notify = env
-    triage.CFG["list_folders"] = {"club.org": "Club"}
+    triage.CFG["folders"] = CLUB
     a = triage.Account({"user": "a@x.com", "host": "h", "password_env": "P"})
     for tier, uid in (("later", 1), ("today", 2), ("now", 3)):
         llm.reply.update(tier=tier)
@@ -217,7 +226,7 @@ def test_list_mail_is_filed_in_its_folder_but_now_stays_in_inbox(env):
 
 def test_filed_list_mail_is_not_gone(env):
     triage = env[0]
-    triage.CFG["list_folders"] = {"club.org": "Club"}
+    triage.CFG["folders"] = CLUB
     triage.q("INSERT INTO messages (account,msgid,ts,sender,subject,tier,applied) VALUES (?,?,?,?,?,?,1)",
              "a@x.com", "<inv1@vendor.com>", triage.now().isoformat(), "s@x", "s", "today")
 

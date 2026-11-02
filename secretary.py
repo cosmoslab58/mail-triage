@@ -530,7 +530,7 @@ def mark_read(account, move, c):
     done = rows("account=? AND state='done'", account)
     if move and done:
         switched = False
-        for folder in ["INBOX", *triage.extra_folders()]:   # list mail is filed in its own folder
+        for folder in ["INBOX", *triage.extra_folders()]:   # topic mail is filed in its own folder
             if folder != "INBOX":
                 if not c.folder_exists(folder):
                     continue

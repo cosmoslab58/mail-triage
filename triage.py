@@ -52,7 +52,7 @@ DEFAULTS = {
     "body_chars": 2500,
     "profile": "profile.md",
     "corrections_in_prompt": 30,
-    "list_folders": {},   # List-ID domain -> folder: group/list mail is filed there instead of Later
+    "folders": {},   # topic folders: {name: {domains: [...], subject: [...]}}; matching mail is filed there, not Later
 }
 
 log = logging.getLogger("triage")
@@ -197,25 +197,36 @@ def describe(raw, body_chars=2500):
         "body": text_of(msg, body_chars),
         # an alert our own push service (dispatch) already delivered and is now also emailing
         "dispatched": bool(msg.get("X-Dispatch")),
-        # "<treasurer.drscca.org>" -> "treasurer.drscca.org"; picks a list_folders entry
+        # "<treasurer.drscca.org>" -> "treasurer.drscca.org"; with addr_domains, picks a topic folder
         "list_id": (re.findall(r"<([^<>\s]+)>", str(msg.get("List-Id", ""))) or [""])[0].lower(),
+        "addr_domains": sorted({a.rsplit("@", 1)[1].lower() for _, a in getaddresses(
+            [str(v) for h in ("From", "To", "Cc", "Reply-To", "Sender", "X-Original-Sender")
+             for v in msg.get_all(h, [])]) if "@" in a}),
     }
 
 
-def list_folder(m):
-    """The folder this list mail is filed in (config list_folders, by List-ID domain), else None.
-    'drscca.org' matches the List-ID drscca.org and any list under it, e.g. treasurer.drscca.org."""
-    lid = m.get("list_id") or ""
-    for domain, folder in (CFG.get("list_folders") or {}).items():
-        d = domain.lower().strip(".")
-        if lid == d or lid.endswith("." + d):
+def _under(host, domain):
+    return host == domain or host.endswith("." + domain)
+
+
+def topic_folder(m):
+    """The topic folder this mail belongs in (config `folders`), else None. A folder matches
+    when the List-ID, or any From/To/Cc/Reply-To/Sender address, is at one of its domains
+    (subdomains included: drscca.org matches treasurer.drscca.org), or a subject word matches."""
+    for folder, rule in (CFG.get("folders") or {}).items():
+        domains = [d.lower().strip(".") for d in rule.get("domains") or []]
+        hosts = [m.get("list_id") or "", *(m.get("addr_domains") or [])]
+        if any(h and _under(h, d) for h in hosts for d in domains):
             return folder
+        for word in rule.get("subject") or []:
+            if re.search(rf"(?<!\w){re.escape(word)}(?!\w)", m.get("subject") or "", re.I):
+                return folder
     return None
 
 
 def extra_folders():
-    """Folders besides INBOX and Later where the sorter files mail (one per list_folders entry)."""
-    return sorted(set((CFG.get("list_folders") or {}).values()))
+    """Folders besides INBOX and Later where the sorter files mail (the topic folders)."""
+    return sorted(CFG.get("folders") or {})
 
 
 # ---------------------------------------------------------------- classify
@@ -413,9 +424,9 @@ class Account(threading.Thread):
         tier = out["tier"]
         applied = 0
         if not CFG["shadow"] and self.move:
-            dest = list_folder(m)
+            dest = topic_folder(m)
             if tier == "later" or (tier == "today" and dest):
-                # list mail goes to its own folder; "now" stays in INBOX, flagged, whatever the list
+                # topic mail goes to its own folder; "now" stays in INBOX, flagged, whatever the topic
                 if dest:
                     self.ensure_later(c, dest)   # made on first use, not in every account
                 c.move([uid], dest or self.later)
