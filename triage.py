@@ -510,10 +510,15 @@ class Account(threading.Thread):
             log.error("classify failed for %s: %s", m["msgid"], e)
             out = {"tier": "today", "category": "unsorted", "summary": m["subject"][:90],
                    "reason": "classifier unavailable", "phishing": False, "emergency": False}
+        dest = topic_folder(m)
+        if dest and out["tier"] == "now" and not out.get("emergency") \
+                and (CFG.get("folders") or {})[dest].get("quiet"):
+            # a quiet topic never rings the phone: filed as "today", still a to-do (2026-11-02)
+            out["tier"] = "today"
+            out["reason"] += f" (quiet: {dest})"
         tier = out["tier"]
         applied = 0
         if not CFG["shadow"] and self.move:
-            dest = topic_folder(m)
             if tier == "later" or (tier == "today" and dest):
                 # topic mail goes to its own folder; "now" stays in INBOX, flagged, whatever the topic
                 if dest:

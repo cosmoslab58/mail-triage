@@ -33,7 +33,7 @@ class FakeNotify:
 def env(tmp_path):
     profile = tmp_path / "profile.md"
     profile.write_text("Bills matter.")
-    cfg = {**triage.DEFAULTS, "owner": "Alex", "timezone": "UTC", "profile": profile,
+    cfg = {**triage.DEFAULTS, "owner": "Alex", "timezone": "UTC", "profile": profile, "quiet_hours": [],
            "llm": {"provider": "gemini", "model": "x"},
            "accounts": [{"user": "a@x.com", "host": "h", "password_env": "P"}]}
     llm, notify = FakeLLM(), FakeNotify()

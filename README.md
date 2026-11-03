@@ -22,7 +22,7 @@ It works with any IMAP mailbox (Gmail, Fastmail, iCloud, Purelymail, your own se
   - Someone you have written to in the last two years, or a reply in a thread you wrote in, is never filed to `Later` (unless you have corrected that sender yourself).
   - Suspected phishing is never pushed.
   - If the model fails, the email stays in the inbox and is listed in the digest.
-- **Topic folders (optional):** `folders` files mail about one subject (a club, a side business) in its own folder instead of `Later`, matched by domain (List-ID or any address on the message) or a subject word. That mail is still sorted by the model, so urgent items still push and become to-dos; only "now" mail stays in the inbox. One rule per topic, not a filter per sender.
+- **Topic folders (optional):** `folders` files mail about one subject (a club, a side business) in its own folder instead of `Later`, matched by domain (List-ID or any address on the message) or a subject word. That mail is still sorted by the model, so urgent items still push and become to-dos; only "now" mail stays in the inbox. Add `quiet: true` and the topic never pushes: its "now" mail is filed as "today" and still becomes a to-do (a real emergency still rings). One rule per topic, not a filter per sender.
 - **Learning:** every 15 minutes it compares where its recent decisions are now. This reads Message-IDs only: no content, no model call.
 - **Dead-man switch (optional):** it pings Uptime Kuma or healthchecks.io every minute, and only while every account is healthy. If it goes quiet, your monitor alerts you.
 

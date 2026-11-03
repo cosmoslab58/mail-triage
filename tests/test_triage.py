@@ -38,8 +38,9 @@ def test_an_emergency_goes_out_at_the_top_priority(env, monkeypatch):
     assert triage.notifiers.Gotify.PRIORITY["emergency"] == 10
 
 
-def test_quiet_hours_across_midnight(env):
+def test_quiet_hours_across_midnight(env, monkeypatch):
     triage, _, _ = env
+    monkeypatch.setitem(triage.CFG, "quiet_hours", triage.DEFAULTS["quiet_hours"])
     at = lambda h, m: dt.datetime(2026, 1, 1, h, m, tzinfo=triage.TZ)  # noqa: E731
     assert triage.in_quiet_hours(at(23, 0)) and triage.in_quiet_hours(at(6, 59))
     assert not triage.in_quiet_hours(at(7, 0)) and not triage.in_quiet_hours(at(12, 0))
@@ -223,6 +224,21 @@ def test_list_mail_is_filed_in_its_folder_but_now_stays_in_inbox(env):
     c = FolderIMAP()
     a.handle(c, 9, RAW)   # ordinary mail: today stays in INBOX
     assert c.moves == []
+
+
+def test_a_quiet_topic_never_rings_but_an_emergency_does(env):
+    triage, llm, notify = env
+    triage.CFG["folders"] = {"Club": {**CLUB["Club"], "quiet": True}}
+    a = triage.Account({"user": "a@x.com", "host": "h", "password_env": "P"})
+    llm.reply.update(tier="now")
+    c = FolderIMAP()
+    a.handle(c, 1, LIST_MAIL)
+    assert c.moves == [([1], "Club")] and c.flags == [] and not notify.sent
+    assert triage.q("SELECT tier, notified FROM messages")[0] == ("today", None)
+    llm.reply.update(tier="now", emergency=True)
+    c = FolderIMAP()
+    a.handle(c, 2, LIST_MAIL.replace(b"<inv1@", b"<inv2@"))
+    assert c.moves == [] and notify.sent
 
 
 def test_filed_list_mail_is_not_gone(env):
