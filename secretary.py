@@ -141,7 +141,7 @@ def record(spec, m, out, tier):
     note = f"{m['sender_name']}: {m['subject']}\n{out.get('summary', '')}\n({account})"
     link = link_for(spec, m["msgid"])
     todo = (out.get("todo") or "").strip()
-    thread = in_thread(account, "todo", refs)
+    thread = in_thread(account, "todo", refs) or (same_task(account, m["sender"], todo) if todo else [])
     if tier in ("now", "today") and todo and CFG.get("todo_url"):
         due = _date(out.get("due"))
         fields = {"title": todo[:120], "note": note, "link": link, "msgid": m["msgid"],
@@ -214,6 +214,47 @@ def in_thread(account, kind, refs):
 
 def _words(s):
     return {w for w in s.lower().replace(":", " ").split() if len(w) > 2}
+
+
+_FILLER = {"the", "and", "for", "about", "with", "from", "via", "link", "when", "arrives", "this", "that",
+           "your", "you", "was", "not", "new", "yes/no/abstain", "secure", "added",
+           # the verb says what to do, not which task it is
+           "reply", "respond", "complete", "vote", "cast", "pay", "approve", "review", "check", "confirm",
+           "verify", "order", "send", "call", "book", "mark", "paid", "sign", "accept", "decide"}
+
+
+def _task_words(s):
+    """Content words of a to-do title, plural 's' dropped, so rewordings of one task compare equal."""
+    out = set()
+    for w in re.findall(r"[a-z0-9$][a-z0-9$.,/-]*", s.lower()):
+        w = w.rstrip(".,")
+        if w in _FILLER or re.fullmatch(r"20\d\d", w) or (len(w) < 3 and not any(c.isdigit() for c in w)):
+            continue
+        out.add(w[:-1] if len(w) > 4 and w.endswith("s") and not w[-2].isdigit() else w)
+    return out
+
+
+def _ids(words):
+    """Reference numbers and amounts (FR-2026-111, $410, quiz 8-1). A bare day number (Dec 15) is not one."""
+    return {w for w in words if any(c.isdigit() for c in w) and not re.fullmatch(r"\d{1,2}", w)}
+
+
+def same_task(account, sender, title):
+    """An open to-do this new email repeats in a new conversation: the same ask reworded
+    (17 notification emails about one vote, five separate replies about one page).
+    Same sender needs half the content words in common, anyone else 70%; differing reference
+    numbers or amounts (FR-2026-111 vs FR-2026-112, Test 7 vs Quiz 8-1) are never the same task."""
+    words = _task_words(title)
+    if not words:
+        return []
+    for r in reversed(rows(f"account=? AND kind='todo' AND state IN {OPEN}", account)):
+        theirs = _task_words(r["title"])
+        if not theirs or _ids(words) != _ids(theirs):
+            continue
+        share = len(words & theirs) / min(len(words), len(theirs))
+        if share >= (0.5 if r["sender"] == sender else 0.7):
+            return [r]
+    return []
 
 
 def find_event(account, sender, refs, title):

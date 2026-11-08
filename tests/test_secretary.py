@@ -399,3 +399,49 @@ def test_ticking_off_marks_filed_list_mail_read_too(sec):
     secretary.mark_read("a@x.com", True, c)
     assert c.flagged == [("Club", [7])] and c.selected == "INBOX"
     triage.CFG["folders"] = {}
+
+
+def test_the_same_ask_in_new_conversations_is_one_todo(sec):
+    """17 notification emails about one board vote, each its own conversation, made 17 to-dos."""
+    triage, llm, _, dav = sec
+    board = "Board <board@club.example>"
+    classify_and_record(triage, llm, "today", mail(1, "Vote", sender=board), todo="Vote on Road Rally 2027 budget")
+    classify_and_record(triage, llm, "today", mail(2, "Vote", sender=board), todo="Cast board vote on Road Rally 2027 budget")
+    classify_and_record(triage, llm, "today", mail(3, "Vote", sender=board), todo="Vote Yes/No/Abstain on Road Rally 2027 budget")
+    secretary.push()
+    (ics,) = todos(dav).values()
+    assert "Road Rally" in ics
+    assert triage.q("SELECT msgids FROM dav")[0][0] == "<m1@ex> <m2@ex> <m3@ex>"
+
+
+def test_different_tasks_from_one_sender_stay_apart(sec):
+    triage, llm, _, dav = sec
+    board = "Board <board@club.example>"
+    classify_and_record(triage, llm, "today", mail(1, "a", sender=board), todo="Vote on Road Rally 2027 budget")
+    classify_and_record(triage, llm, "today", mail(2, "b", sender=board), todo="Vote on 2027 Solo Season Opener and Solo Skool budgets")
+    classify_and_record(triage, llm, "today", mail(3, "c", sender=board), todo="Pay funds request FR-2026-111 ($2,400)")
+    classify_and_record(triage, llm, "today", mail(4, "d", sender=board), todo="Pay funds request FR-2026-112 ($410)")
+    secretary.push()
+    assert len(todos(dav)) == 4
+
+
+def test_a_reworded_reply_from_the_same_person_joins_the_open_todo(sec):
+    triage, llm, _, dav = sec
+    alex = "Alex <alex@example.com>"
+    classify_and_record(triage, llm, "today", mail(1, "Tile", sender=alex), todo="Reply to Alex about Volunteering page copy")
+    classify_and_record(triage, llm, "today", mail(2, "Other", sender=alex), todo="Reply to Alex on Volunteering tile vs Street Survival")
+    classify_and_record(triage, llm, "today", mail(3, "Hi", sender="Sam <sam@example.com>"), todo="Reply to Sam about Volunteering page copy")
+    secretary.push()
+    assert len(todos(dav)) == 2
+
+
+def test_a_closed_todo_is_not_merged_into(sec):
+    triage, llm, _, dav = sec
+    board = "Board <board@club.example>"
+    classify_and_record(triage, llm, "today", mail(1, "Vote", sender=board), todo="Vote on Road Rally 2027 budget")
+    secretary.push()
+    dav.store.clear()   # ticked off in the app
+    secretary.poll()
+    classify_and_record(triage, llm, "today", mail(2, "Vote", sender=board), todo="Vote on Road Rally 2027 budget")
+    secretary.push()
+    assert len(todos(dav)) == 1 and len(triage.q("SELECT uid FROM dav")) == 2
