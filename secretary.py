@@ -91,13 +91,21 @@ def schema_fields(owner):
         "todo": {"type": "string", "description":
                  f"If this email asks {owner} to do something (pay, reply, sign, book, bring, decide), "
                  "that action as a short imperative under 70 characters, e.g. 'Pay Comcast bill ($82)'. "
-                 "Empty string if it is information only."},
+                 "Empty string if it is information only. Also empty for notices that only ask "
+                 f"{owner} to confirm something was them or is fine: sign-in and new-device alerts, "
+                 "password, email, phone or recovery changes, verification codes and links, "
+                 "receipts, order and payment confirmations. If such a notice looks like it was not "
+                 f"{owner}, that is phishing or an emergency, not a todo."},
         "due": {"type": "string", "description":
                 "YYYY-MM-DD deadline for that action if the email states or clearly implies one; else empty"},
         "reply_closes": {"type": "boolean", "description":
                          f"true if {owner} replying to this email is all the todo needs (answer a question, "
                          "accept an invitation, write back to a friend); false if something else must happen "
                          "(pay, sign, book, send a file) or there is no todo"},
+        "resolves": {"type": "boolean", "description":
+                     f"true if this email shows that something an earlier email asked of {owner} is "
+                     "already done: a payment or receipt for it, 'got it, thanks', a confirmation that "
+                     "the vote, form, signup or request went through"},
         "events": {"type": "array", "description":
                    f"Appointments, reservations, flights, meetings, school or club events {owner} is booked "
                    "for or clearly expected at, with a date in the email. Not sales or marketing events, "
@@ -155,6 +163,11 @@ def record(spec, m, out, tier):
         else:
             insert("todo", account, m, fields, due=due or triage.now().date().isoformat(),
                    priority=1 if tier == "now" else 5)
+    elif out.get("resolves") and (done := thread or same_task(account, m["sender"], m["subject"])):
+        row = done[0]
+        triage.q("UPDATE dav SET msgids=? WHERE uid=?", f"{row['msgids']} {m['msgid']}", row["uid"])
+        set_state(row["uid"], "closed" if row["state"] == "new" else "closing")
+        log.info("done per a later email, closing to-do: %s", row["title"])
     elif thread:
         # e.g. "thanks!" in the same conversation: no new task, but ticking off marks it read too
         triage.q("UPDATE dav SET msgids=? WHERE uid=?", f"{thread[0]['msgids']} {m['msgid']}", thread[0]["uid"])

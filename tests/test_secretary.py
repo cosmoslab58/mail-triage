@@ -37,7 +37,7 @@ def sec(env, monkeypatch):
     secretary.setup({"todo_url": "https://dav/x/todo/", "calendar_url": "https://dav/x/calendar/"}, triage)
     dav = FakeDAV()
     monkeypatch.setattr(secretary, "_http", dav)
-    llm.reply.update(todo="", due="", events=[], reply_closes=False)
+    llm.reply.update(todo="", due="", events=[], reply_closes=False, resolves=False)
     yield triage, llm, notify, dav
     secretary.setup(None, triage)
 
@@ -445,3 +445,24 @@ def test_a_closed_todo_is_not_merged_into(sec):
     classify_and_record(triage, llm, "today", mail(2, "Vote", sender=board), todo="Vote on Road Rally 2027 budget")
     secretary.push()
     assert len(todos(dav)) == 1 and len(triage.q("SELECT uid FROM dav")) == 2
+
+
+def test_a_later_email_showing_it_done_closes_the_todo(sec):
+    triage, llm, _, dav = sec
+    classify_and_record(triage, llm, "today", mail(1, "Invoice 77"), todo="Pay invoice 77 ($40)")
+    secretary.push()
+    assert len(todos(dav)) == 1
+    classify_and_record(triage, llm, "later", mail(2, "Re: Invoice 77", in_reply_to="<m1@ex>"),
+                        todo="", resolves=True)
+    secretary.push()
+    assert not [v for v in todos(dav).values() if "STATUS:COMPLETED" not in v]
+
+
+def test_resolves_without_a_matching_todo_does_nothing(sec):
+    triage, llm, _, dav = sec
+    classify_and_record(triage, llm, "today", mail(1, "Invoice 77"), todo="Pay invoice 77 ($40)")
+    secretary.push()
+    classify_and_record(triage, llm, "later", mail(2, "Your order shipped", sender="Shop <s@shop.example>"),
+                        todo="", resolves=True)
+    secretary.push()
+    assert [v for v in todos(dav).values() if "STATUS:COMPLETED" not in v]
