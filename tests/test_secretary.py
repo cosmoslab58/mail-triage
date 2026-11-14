@@ -466,3 +466,19 @@ def test_resolves_without_a_matching_todo_does_nothing(sec):
                         todo="", resolves=True)
     secretary.push()
     assert [v for v in todos(dav).values() if "STATUS:COMPLETED" not in v]
+
+
+def test_the_model_joins_one_matter_from_different_people_into_one_todo(sec):
+    """Piotr's forward, his reply and the app's funds request about one invoice made 3 to-dos (2026-11-13)."""
+    triage, llm, _, dav = sec
+    classify_and_record(triage, llm, "today", mail(1, "Fwd: invoice", sender="Piotr <p@gmail.com>"),
+                        todo="Reply to Piotr about Maxwell invoice payment", same_todo="")
+    m = triage.describe(mail(2, "Funds request", sender="Apps <apps@club.example>"))
+    assert "1: Reply to Piotr about Maxwell invoice payment" in secretary.prompt_context("a@x.com")
+    classify_and_record(triage, llm, "today", mail(2, "Funds request", sender="Apps <apps@club.example>"),
+                        todo="Mark paid FR-2026-115 Maxwell ($170.81)", same_todo="1")
+    classify_and_record(triage, llm, "today", mail(3, "Other", sender="Sam <sam@example.com>"),
+                        todo="Book the hall", same_todo="7")   # a number not on the list is ignored
+    secretary.push()
+    assert len(todos(dav)) == 2 and m
+    assert triage.q("SELECT msgids FROM dav WHERE title LIKE 'Mark paid%'")[0][0] == "<m1@ex> <m2@ex>"

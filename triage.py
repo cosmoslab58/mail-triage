@@ -389,7 +389,8 @@ def classify(account, m, known, reply_to_me):
             f"Subject: {m['subject']}\nBulk/list mail: {m['bulk']}\n"
             f"{owner} has emailed this sender before: {known}\n"
             f"This replies to a thread {owner} wrote in: {reply_to_me}\n"
-            f"Authentication-Results: {m['auth'] or '-'}\n\n"
+            f"Authentication-Results: {m['auth'] or '-'}\n"
+            + (f"{secretary.prompt_context(account)}\n" if secretary.enabled() else "") + "\n"
             f"<email>\n{m['body'] or '(no text body)'}\n</email>")
     out = LLM.classify(system, user, schema())
     if out.get("tier") not in TIERS:

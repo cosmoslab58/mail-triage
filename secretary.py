@@ -89,13 +89,23 @@ def setup(cfg, triage_module):
 def schema_fields(owner):
     return {
         "todo": {"type": "string", "description":
-                 f"If this email asks {owner} to do something (pay, reply, sign, book, bring, decide), "
-                 "that action as a short imperative under 70 characters, e.g. 'Pay Comcast bill ($82)'. "
-                 "Empty string if it is information only. Also empty for notices that only ask "
-                 f"{owner} to confirm something was them or is fine: sign-in and new-device alerts, "
-                 "password, email, phone or recovery changes, verification codes and links, "
-                 "receipts, order and payment confirmations. If such a notice looks like it was not "
-                 f"{owner}, that is phishing or an emergency, not a todo."},
+                 f"If a real person or organization asks {owner} to do something specific (pay, reply, "
+                 "sign, book, bring, decide) and it matters if he does not, that action as a short "
+                 "imperative under 70 characters, e.g. 'Pay Comcast bill ($82)'. The bar is high: most "
+                 "email is not a todo. Empty string if it is information only, and always empty for: "
+                 f"notices that only ask {owner} to confirm something was them or is fine (sign-in and "
+                 "new-device alerts, password, email, phone, recovery or backup-code changes, "
+                 "verification codes and links, receipts, order and payment confirmations); automated "
+                 "mail from software, servers, CI, GitHub, deploys, app stores or permission requests; "
+                 "product nags ('sign in to keep your data', 'finish setting up', 'rate us'); casual "
+                 "chat from kids, family or friends that needs no real action; and a claim, bill or "
+                 f"account {owner} did not expect (that is phishing, not a todo). If a notice looks like "
+                 f"it was not {owner}, that is phishing or an emergency, not a todo."},
+        "same_todo": {"type": "string", "description":
+                      f"If this email is about the same matter as one of {owner}'s open to-dos listed "
+                      "with the email (same bill, invoice, request, vote, form or question, even from a "
+                      "different person or a new thread), that to-do's number; else empty. A different "
+                      "invoice, amount or reference number is a different matter."},
         "due": {"type": "string", "description":
                 "YYYY-MM-DD deadline for that action if the email states or clearly implies one; else empty"},
         "reply_closes": {"type": "boolean", "description":
@@ -149,7 +159,9 @@ def record(spec, m, out, tier):
     note = f"{m['sender_name']}: {m['subject']}\n{out.get('summary', '')}\n({account})"
     link = link_for(spec, m["msgid"])
     todo = (out.get("todo") or "").strip()
-    thread = in_thread(account, "todo", refs) or (same_task(account, m["sender"], todo) if todo else [])
+    same = open_list(account).get(str(out.get("same_todo") or "").strip())
+    thread = in_thread(account, "todo", refs) or ([same] if same else []) \
+        or (same_task(account, m["sender"], todo) if todo else [])
     if tier in ("now", "today") and todo and CFG.get("todo_url"):
         due = _date(out.get("due"))
         fields = {"title": todo[:120], "note": note, "link": link, "msgid": m["msgid"],
@@ -215,6 +227,19 @@ def update(row, fields):
     sets = ", ".join(f"{k}=?" for k in fields)
     triage.q(f"UPDATE dav SET {sets}, state=?, updated=? WHERE uid=?",
              *fields.values(), state, triage.now().isoformat(), row["uid"])
+
+
+def open_list(account):
+    """The account's open to-dos, numbered for the classifier, so it can say an email is about one."""
+    open_ = rows(f"account=? AND kind='todo' AND state IN {OPEN}", account)[-40:]
+    return {str(i): r for i, r in enumerate(open_, 1)}
+
+
+def prompt_context(account):
+    listed = open_list(account)
+    if not listed:
+        return "Open to-dos: (none)"
+    return "Open to-dos (number: title):\n" + "\n".join(f"{n}: {r['title']}" for n, r in listed.items())
 
 
 def in_thread(account, kind, refs):
