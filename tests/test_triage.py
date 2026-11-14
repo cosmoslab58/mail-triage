@@ -241,6 +241,21 @@ def test_a_quiet_topic_never_rings_but_an_emergency_does(env):
     assert c.moves == [] and notify.sent
 
 
+def test_the_model_files_topic_mail_the_rules_miss(env):
+    triage, llm, _ = env
+    triage.CFG["folders"] = {"Club": {**CLUB["Club"], "about": "the club's business"}}
+    assert "Club: the club's business" in triage.schema()["properties"]["folder"]["description"]
+    a = triage.Account({"user": "a@x.com", "host": "h", "password_env": "P"})
+    llm.reply.update(tier="today", folder="Club")
+    c = FolderIMAP()
+    a.handle(c, 1, RAW)   # nothing on it says club
+    assert c.moves == [([1], "Club")]
+    llm.reply.update(tier="today", folder="Elsewhere")   # a folder that does not exist is ignored
+    c = FolderIMAP()
+    a.handle(c, 2, RAW.replace(b"Message-ID: <", b"Message-ID: <x"))
+    assert c.moves == []
+
+
 def test_filed_list_mail_is_not_gone(env):
     triage = env[0]
     triage.CFG["folders"] = CLUB

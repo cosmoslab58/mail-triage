@@ -54,12 +54,15 @@ later_folder: Later
 # too); "now" mail stays in INBOX, flagged. It is still sorted by the model, so it still pushes and
 # makes to-dos. A message matches when its List-ID or any From/To/Cc/Reply-To/Sender address is at
 # one of the domains (subdomains included), or one of the subject words appears in the subject.
+# about: tells the model what belongs there, so mail with no matching address or subject word
+# (a member writing from a personal address) is filed too.
 # quiet: true means that topic never pushes: "now" mail is filed as "today" (still a to-do); only a
 # real emergency still rings.
 # folders:
 #   Club:
 #     domains: [example.org]
 #     subject: ["[Club]"]
+#     about: "the club's business: board, events, money, members"
 #     quiet: true
 # Optional HTTP API for a dashboard: move mail between Inbox/Later/Spam, list spam (actions.py).
 # actions:

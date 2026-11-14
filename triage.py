@@ -338,6 +338,13 @@ def schema():
         "required": ["tier", "category", "summary", "reason", "phishing", "emergency"],
         "additionalProperties": False,
     }
+    folders = CFG.get("folders") or {}
+    if folders:
+        about = "; ".join(f"{name}: {rule.get('about') or name}" for name, rule in folders.items())
+        out["properties"]["folder"] = {
+            "type": "string", "enum": ["none", *folders],
+            "description": f"The topic folder this email belongs in, else none. {about}"}
+        out["required"].append("folder")
     if secretary.enabled():
         extra = secretary.schema_fields(owner)
         out["properties"].update(extra)
@@ -510,7 +517,9 @@ class Account(threading.Thread):
             log.error("classify failed for %s: %s", m["msgid"], e)
             out = {"tier": "today", "category": "unsorted", "summary": m["subject"][:90],
                    "reason": "classifier unavailable", "phishing": False, "emergency": False}
-        dest = topic_folder(m)
+        # the rules catch mail that says so in its addresses or subject; the model catches the rest
+        # (a board member writing from Gmail about region business, 2026-11-13)
+        dest = topic_folder(m) or (out.get("folder") if out.get("folder") in (CFG.get("folders") or {}) else None)
         if dest and out["tier"] == "now" and not out.get("emergency") \
                 and (CFG.get("folders") or {})[dest].get("quiet"):
             # a quiet topic never rings the phone: filed as "today", still a to-do (2026-11-02)
