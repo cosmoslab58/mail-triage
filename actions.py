@@ -373,8 +373,32 @@ def list_folder(folder, days=30):
             items += f.result()
         except Exception as e:
             errors[user] = f"{type(e).__name__}: {e}"
+    if folder in ("inbox", "later"):
+        items = _crm_boxes(folder, items, days, errors)
     items.sort(key=lambda m: m["date"], reverse=True)
     return {"items": items, "errors": errors}
+
+
+def _sorted_later(account, msgid):
+    row = triage.q("SELECT COALESCE(corrected, tier) FROM messages WHERE account=? AND msgid=?", account, msgid)
+    return bool(row) and row[0][0] in ("later", "spam")
+
+
+def _crm_boxes(folder, items, days, errors):
+    """move:false boxes (the CRM reads their INBOX) keep later mail in INBOX. Show it the way
+    the sorter filed it: out of Inbox, under Later (2026-11-15: Instagram nags in the Inbox)."""
+    crm = {a["user"] for a in triage.CFG["accounts"] if a.get("move") is False}
+    if not crm:
+        return items
+    if folder == "inbox":
+        return [m for m in items if m["account"] not in crm or not _sorted_later(m["account"], m["msgid"])]
+    for a in triage.CFG["accounts"]:
+        if a["user"] in crm and a["user"] not in errors:
+            try:
+                items += [m for m in listing(a, "inbox", days) if _sorted_later(a["user"], m["msgid"])]
+            except Exception as e:
+                errors[a["user"]] = f"{type(e).__name__}: {e}"
+    return items
 
 
 def important(hours=24, folder_fn=None):

@@ -412,3 +412,20 @@ def test_a_failed_manual_move_leaves_no_correction(ax, monkeypatch):
         actions.move("a@x.com", "<a@x>", "later", connect=lambda: c)
     assert e.value.status == 502
     assert triage.q("SELECT corrected FROM messages WHERE msgid='<a@x>'") == [(None,)]
+
+
+def test_crm_box_later_mail_shows_under_later_not_inbox(ax, monkeypatch):
+    """info@ boxes keep everything in INBOX for the CRM; the views follow the sorter (2026-11-15)."""
+    for msgid, tier in (("<ig@1>", "later"), ("<lead@1>", "today"), ("<own@1>", "later")):
+        ax.q("INSERT INTO messages (account,msgid,ts,sender,subject,tier) VALUES (?,?,?,?,?,?)",
+             "own@x.com" if msgid == "<own@1>" else "ro@x.com", msgid, ax.now().isoformat(), "s@x", "s", tier)
+    ax.CFG["accounts"][:] = [{"user": "ro@x.com", "move": False}, {"user": "own@x.com"}]
+
+    def fake(spec, folder, days, connect=None):
+        box = {("ro@x.com", "inbox"): ["<ig@1>", "<lead@1>"], ("own@x.com", "inbox"): ["<own@1>"]}
+        return [{"account": spec["user"], "msgid": m, "date": "2026-11-15"} for m in box.get((spec["user"], folder), [])]
+    monkeypatch.setattr(actions, "listing", fake)
+    inbox = {m["msgid"] for m in actions.list_folder("inbox", 14)["items"]}
+    later = {m["msgid"] for m in actions.list_folder("later", 14)["items"]}
+    assert inbox == {"<lead@1>", "<own@1>"}   # an ordinary box's own INBOX is shown as is
+    assert later == {"<ig@1>"}
