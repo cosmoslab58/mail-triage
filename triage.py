@@ -53,6 +53,7 @@ DEFAULTS = {
     "body_chars": 2500,
     "profile": "profile.md",
     "corrections_in_prompt": 30,
+    "emergency_per_hour": 2,   # emergency pushes allowed in any hour; past that they go out as plain "now"
     "move_after": 15,   # seconds after a message is seen before it is moved (Purelymail moves too soon can fail)
     "folders": {},   # topic folders: {name: {domains: [...], subject: [...]}}; matching mail is filed there, not Later
 }
@@ -429,6 +430,22 @@ def apply_rules(out, m, known, reply_to_me):
     return out
 
 
+def cap_emergency(out):
+    """The emergency flag is the model's call and rings through quiet hours at top priority, so
+    a burst of mail that talks it into emergencies (a phish wave, a prompt injection) is capped.
+    Past emergency_per_hour in the last hour, an emergency goes out as a plain "now" push:
+    still pushed and recorded, never dropped (held till morning in quiet hours, like any "now")."""
+    if not out.get("emergency"):
+        return out
+    since = (now() - dt.timedelta(hours=1)).isoformat()
+    if q("SELECT COUNT(*) FROM messages WHERE emergency=1 AND ts > ?", since)[0][0] >= CFG["emergency_per_hour"]:
+        log.warning("emergency cap of %d an hour reached, sending as a plain urgent push", CFG["emergency_per_hour"])
+        out["emergency"] = False
+        out["tier"] = "now"
+        out["reason"] = f"emergency cap: {out['reason']}"[:80]
+    return out
+
+
 # ---------------------------------------------------------------- per-account worker
 
 class Account(threading.Thread):
@@ -554,6 +571,7 @@ class Account(threading.Thread):
             # a quiet topic never rings the phone: filed as "today", still a to-do (2026-11-02)
             out["tier"] = "today"
             out["reason"] += f" (quiet: {dest})"
+        cap_emergency(out)
         tier = out["tier"]
         # Push and record first, touch the mailbox last: an IMAP connection that dropped while
         # the model was thinking must not cost an urgent push (8 lost that way by 2026-11-18).

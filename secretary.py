@@ -175,7 +175,7 @@ def record(spec, m, out, tier):
         else:
             insert("todo", account, m, fields, due=due or triage.now().date().isoformat(),
                    priority=1 if tier == "now" else 5)
-    elif out.get("resolves") and (done := thread or same_task(account, m["sender"], m["subject"])):
+    elif out.get("resolves") and (done := closable(account, m, refs, thread)):
         row = done[0]
         triage.q("UPDATE dav SET msgids=? WHERE uid=?", f"{row['msgids']} {m['msgid']}", row["uid"])
         set_state(row["uid"], "closed" if row["state"] == "new" else "closing")
@@ -188,12 +188,28 @@ def record(spec, m, out, tier):
             record_event(account, m, refs, ev, note, link)
 
 
+def closable(account, m, refs, candidates):
+    """The open to-do this email may close. Closing makes a task vanish unseen, so only a to-do
+    from the same conversation or the same sender qualifies. A title match from anyone else,
+    or the model's same_todo pick, can still join an email to a to-do, never close it."""
+    tied = in_thread(account, "todo", refs)
+    if tied:
+        return tied
+    pool = list(candidates) + same_task(account, m["sender"], m["subject"])
+    return [r for r in pool if same_sender(r, m["sender"])]
+
+
+def same_sender(row, sender):
+    return bool(sender) and (row["sender"] or "").lower() == sender.lower()
+
+
 def record_event(account, m, refs, ev, note, link):
     start, end = _when(ev.get("start")), _when(ev.get("end"))
     title = (ev.get("title") or "").strip()[:120]
     change = ev.get("change") or "new"
     if change in ("update", "cancel"):
-        target = find_event(account, m["sender"], refs, title)
+        # a cancel deletes the event, so it must come from the same conversation or sender
+        target = find_event(account, m["sender"], refs, title, anyone=change != "cancel")
         if target and change == "cancel":
             set_state(target["uid"], "cancel" if target["state"] in ("sent", "dirty") else "cancelled")
             log.info("cancelling event: %s", target["title"])
@@ -295,9 +311,9 @@ def same_task(account, sender, title):
     return []
 
 
-def find_event(account, sender, refs, title):
+def find_event(account, sender, refs, title, anyone=True):
     """The event a change notice is about: same conversation, else same sender with a similar title,
-    else any upcoming event with a clearly similar title."""
+    else (unless anyone=False) any upcoming event with a clearly similar title."""
     live = [r for r in rows("kind='event' AND state IN ('new','sent','dirty') AND start>=?",
                             triage.now().date().isoformat())]
     by_thread = [r for r in live if r["account"] == account and refs & set((r["msgids"] or "").split())]
@@ -308,8 +324,8 @@ def find_event(account, sender, refs, title):
     def similar(r, share):
         theirs = _words(r["title"])
         return bool(words & theirs) and len(words & theirs) >= share * min(len(words), len(theirs))
-    return next((r for r in reversed(live) if r["sender"] == sender and similar(r, 0.34)), None) \
-        or next((r for r in reversed(live) if similar(r, 0.6)), None)
+    return next((r for r in reversed(live) if same_sender(r, sender) and similar(r, 0.34)), None) \
+        or (next((r for r in reversed(live) if similar(r, 0.6)), None) if anyone else None)
 
 
 def _date(s):

@@ -21,6 +21,8 @@ It works with any IMAP mailbox (Gmail, Fastmail, iCloud, Purelymail, your own se
 - **Hard rules the model cannot override:**
   - Someone you have written to in the last two years, or a reply in a thread you wrote in, is never filed to `Later` (unless you have corrected that sender yourself).
   - Suspected phishing is never pushed.
+  - At most 2 emergencies an hour (`emergency_per_hour`) ring at top priority; any more go out as ordinary urgent pushes, never dropped.
+  - A to-do is only closed, or an event cancelled, by mail in the same conversation or from the same sender. A look-alike title from anyone else can never make one disappear.
   - If the model fails, the email stays in the inbox and is listed in the digest. Three failures in a row (an expired key, no credit) and the dead-man switch reports down until an email is sorted again.
   - An urgent push that cannot be delivered is tried again after 2, 10 and 30 minutes.
   - A mailbox that refuses the password is reported once and retried after 1 hour, doubling to 12, never every few minutes.

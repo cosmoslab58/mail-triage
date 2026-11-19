@@ -46,6 +46,8 @@ deadman:                           # optional: an external monitor that alerts w
 quiet_hours: ["21:30", "07:00"]    # "now" pushes inside this window wait until it ends; [] = never hold
                                    # (let the push service decide). Emergencies are never held and go
                                    # out at the notifier's top priority (Gotify 10).
+emergency_per_hour: 2              # emergencies allowed in any hour; past that they go out as plain
+                                   # "now" pushes (never dropped), so a burst cannot keep ringing
 digest_time: "17:00"               # daily "today" digest; null for no digests at all (urgent pushes only)
 digest_level: normal               # its push level: normal (a sound) or low (silent, e.g. when
                                    # something else rolls it into a summary of its own)

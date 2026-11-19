@@ -287,3 +287,25 @@ def test_a_move_waits_until_delivery_has_settled(env, monkeypatch):
     a.seen_at, slept[:] = triage.time.time() - 60, []
     a.handle(c, 2, RAW.replace(b"Subject:", b"Message-ID: <two@x>\r\nSubject:"))
     assert slept == []
+
+
+def test_emergencies_past_the_hourly_cap_go_out_as_plain_urgent_pushes(env):
+    """The emergency flag is the model's call; a burst of mail must not ring at top priority all night."""
+    triage, llm, notify = env
+    triage.CFG["emergency_per_hour"] = 2
+    a = triage.Account({"user": "a@x.com", "host": "h", "password_env": "P"})
+    llm.reply.update(tier="now", emergency=True)
+    for n in range(4):
+        a.handle(FolderIMAP(), n, RAW.replace(b"<m1@example.com>", f"<e{n}@x>".encode()))
+    assert [level for _, _, level in notify.sent] == ["emergency", "emergency", "urgent", "urgent"]
+    rows = triage.q("SELECT tier, emergency, notified, reason FROM messages ORDER BY msgid")
+    assert [r[:3] for r in rows] == [("now", 1, "sent")] * 2 + [("now", 0, "sent")] * 2
+    assert rows[3][3].startswith("emergency cap")
+
+
+def test_the_emergency_cap_counts_only_the_last_hour(env):
+    triage, llm, notify = env
+    triage.CFG["emergency_per_hour"] = 1
+    old = (triage.now() - triage.dt.timedelta(minutes=61)).isoformat()
+    triage.q("INSERT INTO messages (account, msgid, ts, tier, emergency) VALUES ('a@x.com', '<old@x>', ?, 'now', 1)", old)
+    assert triage.cap_emergency({"tier": "now", "reason": "r", "emergency": True})["emergency"]

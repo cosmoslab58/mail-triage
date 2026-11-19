@@ -482,3 +482,33 @@ def test_the_model_joins_one_matter_from_different_people_into_one_todo(sec):
     secretary.push()
     assert len(todos(dav)) == 2 and m
     assert triage.q("SELECT msgids FROM dav WHERE title LIKE 'Mark paid%'")[0][0] == "<m1@ex> <m2@ex>"
+
+
+def test_only_the_same_thread_or_sender_can_close_a_todo(sec):
+    """A look-alike email from anyone else (or the model's same_todo pick) must not make a to-do vanish."""
+    triage, llm, _, dav = sec
+    classify_and_record(triage, llm, "today", mail(1, "Invoice 77"), todo="Pay invoice 77 ($40)")
+    secretary.push()
+    classify_and_record(triage, llm, "later", mail(2, "Invoice 77 paid", sender="X <x@evil.example>"),
+                        todo="", resolves=True, same_todo="1")
+    secretary.push()
+    assert [v for v in todos(dav).values() if "STATUS:COMPLETED" not in v]
+    assert triage.q("SELECT state FROM dav")[0][0] == "open"
+    # the same sender in a new conversation still closes it
+    classify_and_record(triage, llm, "later", mail(3, "Invoice 77 paid"), todo="", resolves=True, same_todo="1")
+    secretary.push()
+    assert not [v for v in todos(dav).values() if "STATUS:COMPLETED" not in v]
+
+
+def test_only_the_same_thread_or_sender_can_cancel_an_event(sec):
+    triage, llm, _, dav = sec
+    classify_and_record(triage, llm, "today", mail(1, "Booked"), events=ev("new", "Dentist with Dr Lee", "2099-03-04T14:30"))
+    secretary.push()
+    classify_and_record(triage, llm, "today", mail(2, "Cancelled", sender="X <x@evil.example>"),
+                        events=ev("cancel", "Dentist with Dr Lee", "2099-03-04T14:30"))
+    secretary.push()
+    assert [k for k in dav.store if "/calendar/" in k]
+    classify_and_record(triage, llm, "today", mail(3, "Cancelled"),
+                        events=ev("cancel", "Dentist with Dr Lee", "2099-03-04T14:30"))
+    secretary.push()
+    assert not [k for k in dav.store if "/calendar/" in k]
