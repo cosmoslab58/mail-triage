@@ -14,6 +14,7 @@ llm:
   model: gemini-3.6-flash
   api_key_env: GOOGLE_API_KEY
   thinking: low                    # gemini only: low | high
+  # timeout: 60                    # seconds per model call (raise it for a slow local model)
   # provider: anthropic
   # model: claude-haiku-5-5
   # api_key_env: ANTHROPIC_API_KEY

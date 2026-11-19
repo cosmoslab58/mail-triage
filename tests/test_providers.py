@@ -27,6 +27,17 @@ def test_plain_request_without_fallbacks():
     assert "fallbacks" not in plain.calls[0]
 
 
+def test_every_model_call_has_a_timeout():
+    p, plain, beta = provider({})
+    p.classify("sys", "mail", {"type": "object"})
+    assert plain.calls[0]["timeout"] == 60
+    p, plain, beta = provider({"timeout": 20, "fallbacks": "default"})
+    p.classify("sys", "mail", {"type": "object"})
+    assert beta.calls[0]["timeout"] == 20
+    for kind in ("gemini", "openai"):
+        assert providers.make({"provider": kind, "model": "m"}).timeout == 60
+
+
 def test_fallbacks_go_through_the_beta_endpoint():
     p, plain, beta = provider({"fallbacks": "default"})
     p.classify("sys", "mail", {"type": "object"})

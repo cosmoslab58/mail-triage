@@ -6,6 +6,8 @@
              (set base_url for anything but OpenAI; api_key_env default OPENAI_API_KEY)
 
 SDKs are imported lazily, so only the one you use has to be installed.
+Every call has a timeout (llm.timeout, seconds, default 60): the SDK defaults run to 10 minutes,
+and a hung call holds up that account's mail.
 """
 import json
 import os
@@ -18,6 +20,7 @@ class Provider:
         self.cfg = cfg
         self.model = cfg["model"]
         self.api_key = os.environ.get(cfg.get("api_key_env") or self.default_key_env or "", "") or None
+        self.timeout = float(cfg.get("timeout") or 60)
         self._client = None
 
     def classify(self, system, user, schema):
@@ -33,7 +36,8 @@ class Gemini(Provider):
         if self._client is None:
             self._client = genai.Client(api_key=self.api_key)
         config = {"system_instruction": system, "response_mime_type": "application/json",
-                  "response_json_schema": schema}
+                  "response_json_schema": schema,
+                  "http_options": types.HttpOptions(timeout=int(self.timeout * 1000))}   # milliseconds
         if self.cfg.get("thinking"):
             config["thinking_config"] = types.ThinkingConfig(thinking_level=self.cfg["thinking"])
         resp = self._client.models.generate_content(
@@ -54,7 +58,8 @@ class Anthropic(Provider):
         if self.cfg.get("effort"):
             output_config["effort"] = self.cfg["effort"]
         kw = {"model": self.model, "max_tokens": 4000, "system": system,
-              "messages": [{"role": "user", "content": user}], "output_config": output_config}
+              "messages": [{"role": "user", "content": user}], "output_config": output_config,
+              "timeout": self.timeout}
         if self.cfg.get("fallbacks"):
             # "default": if a safety classifier declines, the API reruns the request on another model
             resp = self._client.beta.messages.create(
@@ -75,7 +80,7 @@ class OpenAICompatible(Provider):
             # Local servers such as Ollama ignore the key but the SDK insists on one.
             self._client = openai.OpenAI(api_key=self.api_key or "unused", base_url=self.cfg.get("base_url"))
         resp = self._client.chat.completions.create(
-            model=self.model,
+            model=self.model, timeout=self.timeout,
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
             response_format={"type": "json_schema",
                              "json_schema": {"name": "triage", "schema": schema, "strict": True}})

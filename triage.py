@@ -35,6 +35,7 @@ from zoneinfo import ZoneInfo
 
 import yaml
 from imapclient import IMAPClient
+from imapclient.exceptions import IMAPClientAbortError, LoginError
 from imapclient.imapclient import SENT
 
 import notifiers
@@ -69,6 +70,12 @@ _db = None
 _lock = threading.Lock()
 LAST_OK = {}             # account -> time of its last completed IMAP cycle (dead-man input)
 STARTED = time.time()
+DROPPED = (OSError, IMAPClientAbortError)   # the IMAP connection died: retry the message, do not record a failure
+LLM_FAILS_DOWN = 3       # this many classifier failures in a row and the dead-man reports down
+LLM_HEALTH = {"fails": 0, "error": ""}   # consecutive classifier failures and the last error's type
+PUSH_RETRY = (120, 600, 1800)   # a failed urgent push is tried again after 2, 10 and 30 min, then stays 'failed'
+_retry_at = {}           # (account, msgid) -> earliest time of the next push retry (after a restart: at once)
+LOGIN_BACKOFF = (3600, 43200)   # a refused login is retried after 1 h, doubling to 12 h
 
 
 # ---------------------------------------------------------------- setup + state
@@ -118,6 +125,8 @@ def init(cfg, data_dir, llm=None, notify=None):
     # emergency: life, health, safety or property (the classifier's flag). Added 2026-10-24.
     if "emergency" not in have:
         _db.execute("ALTER TABLE messages ADD COLUMN emergency INTEGER DEFAULT 0")
+    LLM_HEALTH.update(fails=0, error="")
+    _retry_at.clear()
     secretary.setup(cfg.get("caldav"), sys.modules[__name__])
 
 
@@ -437,6 +446,7 @@ class Account(threading.Thread):
         self.last_contacts = 0
         self.last_replies = 0
         self.seen_at = 0.0   # when process_new last found new mail (move_after counts from here)
+        self.unfiled = {}    # msgid -> (tier, folder): pushed and recorded, but the connection dropped before the move/flag
 
     def connect(self):
         c = IMAPClient(self.host, port=self.port, ssl=True, timeout=90)
@@ -495,6 +505,11 @@ class Account(threading.Thread):
             else:
                 try:
                     self.handle(c, uid, raw)
+                except DROPPED:
+                    # The connection died, not the message: leave the cursor where it is so the
+                    # next session reads this message again.
+                    log.warning("uid %s: connection dropped; it will be retried", uid)
+                    raise
                 except Exception as e:
                     # Never advance past a message without a row: the row is what puts it
                     # in the digest. A failure here must surface, not disappear.
@@ -505,6 +520,11 @@ class Account(threading.Thread):
     def handle(self, c, uid, raw):
         m = describe(raw, CFG["body_chars"])
         if q("SELECT 1 FROM messages WHERE account=? AND msgid=?", self.user, m["msgid"]):
+            # Already pushed and recorded, so never pushed twice. If the connection dropped
+            # before it was moved or flagged, finish that now (one more try, then leave it).
+            owed = self.unfiled.pop(m["msgid"], None)
+            if owed:
+                self.file(c, uid, m["msgid"], *owed, again=False)
             return
         known = bool(q("SELECT 1 FROM contacts WHERE addr=?", m["sender"]))
         reply_to_me = any(q("SELECT 1 FROM sent_ids WHERE msgid=?", r) for r in m["refs"])
@@ -516,9 +536,14 @@ class Account(threading.Thread):
                        "reason": "sent by dispatch, already handled", "phishing": False, "emergency": False}
             else:
                 out = classify(self.user, m, known, reply_to_me)
+                LLM_HEALTH["fails"] = 0
         except Exception as e:
             # Fail open: unclassified mail stays in the inbox and shows up in the digest.
+            # Enough of these in a row and the dead-man reports down (an expired key, no credit).
             log.error("classify failed for %s: %s", m["msgid"], e)
+            with _lock:
+                LLM_HEALTH["fails"] += 1
+                LLM_HEALTH["error"] = type(e).__name__
             out = {"tier": "today", "category": "unsorted", "summary": m["subject"][:90],
                    "reason": "classifier unavailable", "phishing": False, "emergency": False}
         # the rules catch mail that says so in its addresses or subject; the model catches the rest
@@ -530,36 +555,52 @@ class Account(threading.Thread):
             out["tier"] = "today"
             out["reason"] += f" (quiet: {dest})"
         tier = out["tier"]
-        applied = 0
-        if not CFG["shadow"] and self.move:
-            if tier == "later" or (tier == "today" and dest):
-                # topic mail goes to its own folder; "now" stays in INBOX, flagged, whatever the topic
-                if dest:
-                    self.ensure_later(c, dest)   # made on first use, not in every account
-                # a move within seconds of delivery is when Purelymail has lost the move or the
-                # search entry; let delivery settle (one wait covers a whole burst)
-                wait = CFG["move_after"] - (time.time() - self.seen_at)
-                if wait > 0:
-                    time.sleep(wait)
-                applied = 0 if move_checked(c, [uid], dest or self.later, self.user, m["msgid"]) else 1
-            elif tier == "now":
-                c.add_flags([uid], [b"\\Flagged"])
-                applied = 1
+        # Push and record first, touch the mailbox last: an IMAP connection that dropped while
+        # the model was thinking must not cost an urgent push (8 lost that way by 2026-11-18).
         notified = None
         if tier == "now":
             # quiet hours hold urgent mail till morning, but never an emergency
             held = in_quiet_hours() and not out.get("emergency")
-            notified = "held" if held else ("sent" if push_now(self.user, m, out) else "failed")
+            notified = "held" if held else ("sent" if push_now(self.user, m, out) else "retry1")
+            if notified == "retry1":
+                _retry_at[(self.user, m["msgid"])] = time.time() + PUSH_RETRY[0]
         q("""INSERT OR IGNORE INTO messages (account,msgid,ts,sender,sender_name,subject,tier,category,
              summary,reason,phishing,bulk,notified,applied,emergency) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
           self.user, m["msgid"], now().isoformat(), m["sender"], m["sender_name"], m["subject"],
           tier, out["category"], out["summary"], out["reason"], int(out["phishing"]), int(m["bulk"]),
-          notified, applied, int(out.get("emergency", False)))
+          notified, 0, int(out.get("emergency", False)))
         log.info("%-5s %-28s %s | %s", tier.upper(), m["sender"][:28], m["subject"][:60], out["reason"])
         try:
             secretary.record(self.spec, m, out, tier)
         except Exception:
             log.exception("could not queue to-do/events for %s", m["msgid"])
+        self.file(c, uid, m["msgid"], tier, dest)
+
+    def file(self, c, uid, msgid, tier, dest, again=True):
+        """The mailbox side of a decision that is already pushed and recorded: move or flag.
+        If the connection drops here, remember what is owed so the retry finishes it."""
+        applied = 0
+        try:
+            if not CFG["shadow"] and self.move:
+                if tier == "later" or (tier == "today" and dest):
+                    # topic mail goes to its own folder; "now" stays in INBOX, flagged, whatever the topic
+                    if dest:
+                        self.ensure_later(c, dest)   # made on first use, not in every account
+                    # a move within seconds of delivery is when Purelymail has lost the move or the
+                    # search entry; let delivery settle (one wait covers a whole burst)
+                    wait = CFG["move_after"] - (time.time() - self.seen_at)
+                    if wait > 0:
+                        time.sleep(wait)
+                    applied = 0 if move_checked(c, [uid], dest or self.later, self.user, msgid) else 1
+                elif tier == "now":
+                    c.add_flags([uid], [b"\\Flagged"])
+                    applied = 1
+        except DROPPED:
+            if again:
+                self.unfiled[msgid] = (tier, dest)
+            raise
+        if applied:
+            q("UPDATE messages SET applied=1 WHERE account=? AND msgid=?", self.user, msgid)
 
     # -- corrections ----------------------------------------------------------
     def ids_since(self, c, folder, days=21):
@@ -635,15 +676,28 @@ class Account(threading.Thread):
                 pass
 
     def run(self):
-        backoff = 30
+        backoff, login_backoff = 30, LOGIN_BACKOFF[0]
         while True:
             try:
                 self.session()
-                backoff = 30
+                backoff, login_backoff = 30, LOGIN_BACKOFF[0]
                 self.alerted = False
             except Exception as e:
                 log.error("session error: %s: %s", type(e).__name__, e)
                 self.failing_since = self.failing_since or time.time()
+                if isinstance(e, LoginError) and "[UNAVAILABLE]" not in str(e):
+                    # The server refused the password. Asking again every few minutes changes
+                    # nothing and is how an account gets locked: say so once, then try rarely.
+                    if not self.alerted:
+                        OPS.send("mail-triage: login refused",
+                                 f"{self.user}: the mail server refused the login ({str(e)[:200]}). "
+                                 f"Its mail is not being sorted. Next try in {login_backoff // 3600} h, then "
+                                 f"less often (up to every {LOGIN_BACKOFF[1] // 3600} h); restart mail-triage "
+                                 "after fixing the password.")
+                        self.alerted = True
+                    time.sleep(login_backoff)
+                    login_backoff = min(login_backoff * 2, LOGIN_BACKOFF[1])
+                    continue
                 if time.time() - self.failing_since > 3600 and not self.alerted:
                     OPS.send("mail-triage: account offline", f"{self.user} has failed for over an hour: {e}")
                     self.alerted = True
@@ -734,6 +788,9 @@ def deadman_status():
         return "up", f"starting ({len(accounts) - len(stale)}/{len(accounts)} connected)"
     if stale:
         return "down", "stale: " + ", ".join(stale)
+    if LLM_HEALTH["fails"] >= LLM_FAILS_DOWN:
+        # mail still lands in the inbox unsorted, but nothing would ring: the owner must hear of it
+        return "down", f"classifier failing: {LLM_HEALTH['fails']} emails in a row unsorted ({LLM_HEALTH['error']})"
     if secretary.enabled() and secretary.health():
         return "down", secretary.health()
     return "up", f"{len(accounts)} accounts ok"
@@ -762,19 +819,37 @@ def deadman():
 
 # ---------------------------------------------------------------- scheduler
 
+def push_owed(t):
+    """Send the urgent pushes still owed: mail held overnight, and pushes that failed
+    ('retryN' = N failed tries so far). After the last retry the row stays 'failed'."""
+    quiet = in_quiet_hours(t)
+    for account, msgid, sn, subj, summary, reason, emergency, state in q(
+            """SELECT account, msgid, sender_name, subject, summary, reason, emergency, notified FROM messages
+               WHERE notified='held' OR notified LIKE 'retry%'"""):
+        if (quiet and not emergency) or time.time() < _retry_at.get((account, msgid), 0):
+            continue
+        tries = 0 if state == "held" else int(state[5:])
+        note = " (held overnight)" if state == "held" else " (delayed: the push did not go through)"
+        ok = push_now(account, {"sender_name": sn, "subject": subj, "msgid": msgid},
+                      {"summary": summary, "reason": reason + note, "emergency": emergency})
+        _retry_at.pop((account, msgid), None)
+        if ok:
+            state = "sent"
+        elif tries >= len(PUSH_RETRY):
+            state = "failed"
+            log.error("urgent push for %s %s gave up after %d tries", account, msgid, tries + 1)
+        else:
+            state = f"retry{tries + 1}"
+            _retry_at[(account, msgid)] = time.time() + PUSH_RETRY[tries]
+        q("UPDATE messages SET notified=? WHERE account=? AND msgid=?", state, account, msgid)
+
+
 def scheduler():
     while True:
         try:
             deadman()
             t = now()
-            if not in_quiet_hours(t):
-                for account, msgid, sn, subj, summary, reason in q(
-                        """SELECT account, msgid, sender_name, subject, summary, reason FROM messages
-                           WHERE notified='held'"""):
-                    ok = push_now(account, {"sender_name": sn, "subject": subj, "msgid": msgid},
-                                  {"summary": summary, "reason": reason + " (held overnight)"})
-                    q("UPDATE messages SET notified=? WHERE account=? AND msgid=?",
-                      "sent" if ok else "failed", account, msgid)
+            push_owed(t)
             day = t.date().isoformat()
             if CFG["digest_time"] and t.strftime("%H:%M") >= CFG["digest_time"] and kv_get("daily") != day:
                 kv_set("daily", day)
