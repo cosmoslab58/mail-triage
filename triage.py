@@ -206,7 +206,7 @@ def describe(raw, body_chars=2500):
         "reply_to": parseaddr(str(msg.get("Reply-To", "")))[1].lower(),
         "refs": refs,
         "body": text_of(msg, body_chars),
-        # an alert our own push service (dispatch) already delivered and is now also emailing
+        # an alert our own push service already delivered and is now also emailing (header X-Dispatch)
         "dispatched": bool(msg.get("X-Dispatch")),
         # "<treasurer.drscca.org>" -> "treasurer.drscca.org"; with addr_domains, picks a topic folder
         "list_id": (re.findall(r"<([^<>\s]+)>", str(msg.get("List-Id", ""))) or [""])[0].lower(),
@@ -547,10 +547,10 @@ class Account(threading.Thread):
         reply_to_me = any(q("SELECT 1 FROM sent_ids WHERE msgid=?", r) for r in m["refs"])
         try:
             if m["dispatched"] and m["sender"] == (CFG.get("dispatch_sender") or "").lower():
-                # Dispatch decided whether this rings the phone already; pushing it again would
+                # The push service decided whether this rings the phone already; pushing it again would
                 # ring twice (and its replies could loop). File it, no model call.
                 out = {"tier": "later", "category": "server alert", "summary": m["subject"][:90],
-                       "reason": "sent by dispatch, already handled", "phishing": False, "emergency": False}
+                       "reason": "sent by the push service, already handled", "phishing": False, "emergency": False}
             else:
                 out = classify(self.user, m, known, reply_to_me)
                 LLM_HEALTH["fails"] = 0
