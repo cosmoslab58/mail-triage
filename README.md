@@ -28,7 +28,7 @@ It works with any IMAP mailbox (Gmail, Fastmail, iCloud, Purelymail, your own se
   - A mailbox that refuses the password is reported once and retried after 1 hour, doubling to 12, never every few minutes.
 - **Topic folders (optional):** `folders` files mail about one subject (a club, a side business) in its own folder instead of `Later`, matched by domain (List-ID or any address on the message) or a subject word, or by the model when the folder has an `about` line and nothing on the message names the topic. That mail is still sorted by the model, so urgent items still push and become to-dos; only "now" mail stays in the inbox. Add `quiet: true` and the topic never pushes: its "now" mail is filed as "today" and still becomes a to-do (a real emergency still rings). One rule per topic, not a filter per sender.
 - **Learning:** every 15 minutes it compares where its recent decisions are now. This reads Message-IDs only: no content, no model call.
-- **Dead-man switch (optional):** it pings Uptime Kuma or healthchecks.io every minute, and only while every account is healthy. If it goes quiet, your monitor alerts you.
+- **Dead-man switch (optional):** it pings Uptime Kuma, healthchecks.io or a Gatus external endpoint every minute, and only while every account is healthy. If it goes quiet, your monitor alerts you.
 
 ## To-dos and calendar (optional)
 

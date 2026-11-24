@@ -41,7 +41,8 @@ notify:                            # where "now" emails and digests go
 
 deadman:                           # optional: an external monitor that alerts when this goes quiet
   style: kuma                      # kuma (Uptime Kuma push monitor) | healthchecks (healthchecks.io)
-  url_env: DEADMAN_URL
+  url_env: DEADMAN_URL             #   | gatus (a Gatus external endpoint's .../external URL)
+  # token_env: DEADMAN_TOKEN       # gatus only: the endpoint's bearer token
 
 quiet_hours: ["21:30", "07:00"]    # "now" pushes inside this window wait until it ends; [] = never hold
                                    # (let the push service decide). Emergencies are never held and go

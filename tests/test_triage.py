@@ -124,6 +124,24 @@ def test_deadman_reports_starting_then_stale_then_ok(env, monkeypatch):
     assert triage.deadman_status() == ("up", "1 accounts ok")
 
 
+def test_deadman_gatus_style_posts_with_a_bearer_token(env, monkeypatch):
+    triage, _, _ = env
+    monkeypatch.setattr(triage, "CFG", {**triage.CFG, "deadman": {"style": "gatus", "url_env": "DM_URL", "token_env": "DM_TOKEN"}})
+    monkeypatch.setenv("DM_URL", "http://gatus.example/api/v1/endpoints/k/external")
+    monkeypatch.setenv("DM_TOKEN", "tok")
+    monkeypatch.setattr(triage, "deadman_status", lambda: ("down", "stale: a@x.com"))
+    sent = []
+
+    class R:
+        def read(self):
+            return b""
+    monkeypatch.setattr(triage.urllib.request, "urlopen", lambda req, timeout: sent.append(req) or R())
+    triage.deadman()
+    req = sent[0]
+    assert req.get_method() == "POST" and req.get_header("Authorization") == "Bearer tok"
+    assert req.full_url == "http://gatus.example/api/v1/endpoints/k/external?success=false&error=stale%3A+a%40x.com"
+
+
 def test_notifier_levels_map_to_each_backend(monkeypatch):
     posts = []
     monkeypatch.setattr(notifiers, "_post", lambda url, body, headers, form=False: posts.append(body))

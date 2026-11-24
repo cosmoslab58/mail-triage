@@ -819,18 +819,27 @@ def deadman():
 
       style: kuma          GET <url>?status=up|down&msg=...   (Uptime Kuma push monitor)
       style: healthchecks  GET <url> when up, <url>/fail when down  (healthchecks.io and clones)
+      style: gatus         POST <url>?success=true|false&error=...  with "Authorization: Bearer
+                           <token>" from token_env  (a Gatus external endpoint:
+                           http://gatus:8080/api/v1/endpoints/<key>/external)
     """
     dm = CFG.get("deadman") or {}
     url = os.environ.get(dm.get("url_env", ""), "")
     if not url:
         return
     status, msg = deadman_status()
-    if dm.get("style", "kuma") == "healthchecks":
+    style = dm.get("style", "kuma")
+    req = None
+    if style == "healthchecks":
         target = url.rstrip("/") + ("" if status == "up" else "/fail")
+    elif style == "gatus":
+        q = {"success": "true" if status == "up" else "false"} | ({} if status == "up" else {"error": msg[:300]})
+        req = urllib.request.Request(f"{url}?{urllib.parse.urlencode(q)}", data=b"", method="POST",
+                                     headers={"Authorization": f"Bearer {os.environ.get(dm.get('token_env', ''), '')}"})
     else:
         target = f"{url}?status={status}&msg={urllib.parse.quote(msg)}"
     try:
-        urllib.request.urlopen(target, timeout=15).read()
+        urllib.request.urlopen(req or target, timeout=15).read()
     except Exception as e:
         log.warning("dead-man push failed: %s", e)
 
