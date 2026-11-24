@@ -129,7 +129,7 @@ def test_deadman_gatus_style_posts_with_a_bearer_token(env, monkeypatch):
     monkeypatch.setattr(triage, "CFG", {**triage.CFG, "deadman": {"style": "gatus", "url_env": "DM_URL", "token_env": "DM_TOKEN"}})
     monkeypatch.setenv("DM_URL", "http://gatus.example/api/v1/endpoints/k/external")
     monkeypatch.setenv("DM_TOKEN", "tok")
-    monkeypatch.setattr(triage, "deadman_status", lambda: ("down", "stale: a@x.com"))
+    monkeypatch.setattr(triage, "deadman_status", lambda: ("down", "stale:\n a@x.com"))
     sent = []
 
     class R:

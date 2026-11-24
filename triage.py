@@ -833,7 +833,9 @@ def deadman():
     if style == "healthchecks":
         target = url.rstrip("/") + ("" if status == "up" else "/fail")
     elif style == "gatus":
-        q = {"success": "true" if status == "up" else "false"} | ({} if status == "up" else {"error": msg[:300]})
+        # one line, no backslash: Gatus puts it into its alert's JSON body escaping only quotes
+        err = re.sub(r"\s+", " ", msg.replace("\\", "/")).strip()[:300]
+        q = {"success": "true" if status == "up" else "false"} | ({} if status == "up" else {"error": err})
         req = urllib.request.Request(f"{url}?{urllib.parse.urlencode(q)}", data=b"", method="POST",
                                      headers={"Authorization": f"Bearer {os.environ.get(dm.get('token_env', ''), '')}"})
     else:
