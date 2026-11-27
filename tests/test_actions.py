@@ -429,3 +429,46 @@ def test_crm_box_later_mail_shows_under_later_not_inbox(ax, monkeypatch):
     later = {m["msgid"] for m in actions.list_folder("later", 14)["items"]}
     assert inbox == {"<lead@1>", "<own@1>"}   # an ordinary box's own INBOX is shown as is
     assert later == {"<ig@1>"}
+
+
+def test_requests_to_one_mail_server_take_turns(ax, monkeypatch):
+    """2026-11-27: a search of every account opened 8 connections at once to one mail server
+    and it reset them all. No more than HOST_SLOTS requests talk to one server at a time."""
+    import threading
+    import time as _time
+    monkeypatch.setattr(actions, "HOST_SLOTS", 2)
+    monkeypatch.setattr(actions, "_hosts", {})
+    monkeypatch.setattr(actions.triage, "Account", lambda spec: type("A", (), {"connect": lambda self: box()})())
+    busy, peak, guard = [0], [0], threading.Lock()
+
+    def use(n):
+        with actions.imap({"user": f"u{n}@x.com", "host": "imap.same.example"}):
+            with guard:
+                busy[0] += 1
+                peak[0] = max(peak[0], busy[0])
+            _time.sleep(0.05)
+            with guard:
+                busy[0] -= 1
+
+    threads = [threading.Thread(target=use, args=(n,)) for n in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert peak[0] == 2
+    for n in range(6):
+        actions._pool.pop(f"u{n}@x.com", None)
+
+
+def test_a_full_mail_server_answers_busy_instead_of_hanging(ax, monkeypatch):
+    monkeypatch.setattr(actions, "HOST_SLOTS", 1)
+    monkeypatch.setattr(actions, "HOST_WAIT_S", 0.1)
+    monkeypatch.setattr(actions, "_hosts", {})
+    slot = actions._host_slot("imap.full.example")
+    slot.acquire()
+    try:
+        with pytest.raises(actions.ActionError) as e, actions.imap({"user": "b@x.com", "host": "imap.full.example"}):
+            pass
+        assert e.value.status == 503
+    finally:
+        slot.release()

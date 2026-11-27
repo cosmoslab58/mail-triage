@@ -76,11 +76,23 @@ LOCK_WAIT_S = 15   # longer than this behind another request: use a connection o
 _pool: dict = {}            # account -> (IMAPClient, when last used)
 _locks: dict = {}
 _locks_guard = threading.Lock()
+# At most this many API requests talk to one mail server at a time. A search of every account
+# used to open a connection to all of them at once, plus a fresh one each when the kept one was
+# busy; 2026-11-27 Purelymail (8 accounts on one server) reset them all for half an hour and the
+# sorter stalled long enough to page as down. The rest wait their turn, up to HOST_WAIT_S.
+HOST_SLOTS = 3
+HOST_WAIT_S = 90
+_hosts: dict = {}
 
 
 def _lock(user):
     with _locks_guard:
         return _locks.setdefault(user, threading.Lock())
+
+
+def _host_slot(host):
+    with _locks_guard:
+        return _hosts.setdefault(host, threading.BoundedSemaphore(HOST_SLOTS))
 
 
 def _close(c):
@@ -102,6 +114,19 @@ def imap(spec, connect=None):
         finally:
             _close(c)
         return
+    slot = _host_slot(spec.get("host", ""))
+    if not slot.acquire(timeout=HOST_WAIT_S):
+        raise ActionError(503, f"{spec['user']}: its mail server is busy with other requests, try again")
+    try:
+        with _kept(spec) as c:
+            yield c
+    finally:
+        slot.release()
+
+
+@contextmanager
+def _kept(spec):
+    """The account's kept connection, or a fresh one if another request holds it too long."""
     user = spec["user"]
     lock = _lock(user)
     if not lock.acquire(timeout=LOCK_WAIT_S):
